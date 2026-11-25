@@ -5,6 +5,12 @@ from sqlalchemy import func
 import logging
 from models.arena_challege import ArenaChallenge
 from models.template_v2 import TemplateV2
+from models.arena_rating import (
+    BattleResult,
+    EloRatingByModel,
+    EloRatingByModelAndTemplate,
+    EloRatingByTemplate,
+)
 from typing import Annotated, List, Optional, Dict
 
 from models.text_category import TextCategory
@@ -187,3 +193,52 @@ def get_arena_challenge_by_id(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/{challenge_id}", status_code=status.HTTP_200_OK)
+def delete_arena_challenge(
+    db: db_dependency,
+    challenge_id: str = Path(..., description="Challenge ID"),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Permanently delete an arena challenge (admin only).
+
+    Also deletes everything that references it: battle results, Elo ratings
+    and its templates, in one transaction.
+    """
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can delete arenas",
+        )
+
+    arena_challenge = db.query(ArenaChallenge).filter(ArenaChallenge.id == challenge_id).first()
+    if not arena_challenge:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Arena challenge with ID {challenge_id} not found",
+        )
+
+    try:
+        # Children first: battles and ratings reference templates, templates reference the challenge.
+        battles = db.query(BattleResult).filter(BattleResult.challenge_id == challenge_id).delete(synchronize_session=False)
+        for rating_model in (EloRatingByModelAndTemplate, EloRatingByTemplate, EloRatingByModel):
+            db.query(rating_model).filter(rating_model.challenge_id == challenge_id).delete(synchronize_session=False)
+        templates = db.query(TemplateV2).filter(TemplateV2.challenge_id == challenge_id).delete(synchronize_session=False)
+        challenge_name = arena_challenge.challenge_name
+        db.delete(arena_challenge)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting arena challenge {challenge_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    logger.info(
+        f"Arena challenge {challenge_id} ({challenge_name}) deleted by {current_user.id}: "
+        f"{templates} templates, {battles} battles removed"
+    )
+    return {
+        "message": "Arena deleted successfully",
+        "id": challenge_id,
+        "deleted_templates": templates,
+        "deleted_battles": battles,
+    }
