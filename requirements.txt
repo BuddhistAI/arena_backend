@@ -33,8 +33,10 @@ Jinja2==3.1.2
 jiwer==4.0.0
 jmespath==1.0.1
 Mako==1.3.10
-# Scorer registry (v0.2.0); only imported by service/scorer_catalogue.py
-buddhist-eval @ git+https://github.com/BuddhistAI/buddhist-eval@a01c4fb
+# Scorer registry (v0.3.0: display formats and Public Summaries); only imported by service/scorer_catalogue.py
+# TODO: c0fa19a is the unpushed tip of buddhist-eval branch leaderboard/t01-scorer-summary.
+# Move this pin to the merged buddhist-eval commit once it is pushed.
+buddhist-eval @ git+https://github.com/BuddhistAI/buddhist-eval@c0fa19a
 MarkupSafe==3.0.2
 multidict==6.6.3
 multiprocess==0.70.16
