@@ -51,6 +51,11 @@ class SubmissionCreatedResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class DailyLimitResponse(BaseModel):
+    """Answer when the daily Submission limit on a Challenge is reached."""
+    detail: str = Field(..., description="Message saying the limit is reached and when it resets")
+    reset_at: str = Field(..., description="When the limit resets: the next 00:00 UTC, ISO 8601 with Z")
+
 class SubmissionStatusResponse(BaseModel):
     """Where a Submission is in scoring, and its result once scored."""
     id: uuid.UUID = Field(..., description=SUBMISSION_ID_DESCRIPTION)

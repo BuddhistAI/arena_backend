@@ -6,7 +6,9 @@
         predictions=b'{"id": "1", "prediction": "..."}\\n', model_link=None,
     ))
 
-``submit`` runs every check before it stores anything. If any check fails it
+``submit`` first refuses the Submission with ``DailyLimitReached`` if the
+user already stored today's limit on the Challenge (``service.daily_limit``).
+It runs every other check before it stores anything. If any check fails it
 raises ``SubmissionRejected``, whose ``errors`` list every problem found (each
 a ``SubmissionError`` naming the form field, and the line or Input id when
 known); nothing is stored, nothing is counted and the Challenge is not Locked.
@@ -40,6 +42,7 @@ from ports.clock import Clock
 from ports.object_storage import ObjectStorage, private_key
 from service import scorer_catalogue
 from service.challenge_data import MAX_REPORTED_ERRORS, line_of
+from service.daily_limit import check_daily_limit
 from submission_worker import SubmissionQueue, SubmissionTask
 
 TYPE_FIELD = "type"
@@ -182,8 +185,11 @@ class SubmissionIntake:
             The stored Submission, ``pending``.
 
         Raises:
+            DailyLimitReached: The user used today's Submissions to this
+                Challenge; checked first, and nothing was stored.
             SubmissionRejected: Listing every problem; nothing was stored.
         """
+        check_daily_limit(self.db, challenge, user, self.clock())
         form = _cleaned(form)
         type_intake = _type_intake(form.type)
         candidate = Candidate(challenge=challenge, form=form, storage=self.storage)
