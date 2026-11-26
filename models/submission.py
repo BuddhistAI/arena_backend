@@ -61,6 +61,9 @@ class Submission(Base):
     # Challenge Repo: the Submission's folder, set once it is published.
     # Its sync rides on the Challenge's (see ``sync_worker``).
     repo_path = Column(String, nullable=True)
+    # The public username its ``submission.json`` was first published under.
+    # Later syncs keep it, so a rename does not rewrite what is published.
+    published_submitter = Column(String, nullable=True)
     sync_status = Column(
         String, nullable=False, default=SyncStatus.PENDING.value, server_default=SyncStatus.PENDING.value
     )
@@ -101,14 +104,17 @@ class Submission(Base):
         """
         return db.query(cls).filter(cls.is_live)
 
-    def mark_synced(self, repo_path: str) -> None:
-        """The Submission's folder is in the Challenge Repo at ``repo_path``.
+    def mark_synced(self, repo_path: str, *, submitter: str) -> None:
+        """The Submission's folder is in the Challenge Repo at ``repo_path``,
+        published under the public username ``submitter``.
 
         Args:
             repo_path: The folder's path in the Challenge Repo.
+            submitter: The username its ``submission.json`` holds.
         """
         self.sync_status = SyncStatus.SYNCED
         self.repo_path = repo_path
+        self.published_submitter = submitter
 
     def queue_sync(self) -> None:
         """Wait for the next sync of the Challenge to publish the folder."""

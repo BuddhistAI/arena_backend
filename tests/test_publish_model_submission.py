@@ -301,3 +301,36 @@ def test_a_later_submission_whose_folder_would_collide_uses_its_full_id(
         "models/google-vision-ocr-aaaaaaaa",
         f"models/google-vision-ocr-{later}",
     ]
+
+
+def rename(client, headers, username):
+    response = client.patch("/users/me", json={"username": username}, headers=headers)
+    assert response.status_code == 200, response.text
+
+
+def published_submitter(repo_host, submission_id):
+    """The ``submitter`` in the published ``submission.json`` of the Submission."""
+    files = repo_host.repos[REPO].files
+    [path] = [p for p in files if p.endswith(f"-{submission_id[:8]}/submission.json")]
+    return json.loads(files[path])["submitter"]
+
+
+def test_a_rename_leaves_published_submissions_under_the_old_username(
+    client, headers_for, participant, scored, repo_host, sync_worker
+):
+    """A ``submission.json`` already synced keeps the username it was written
+    with, even when a later Submission syncs the Challenge again; the later
+    Submission is published under the new username."""
+    earlier = scored(name="Google Vision OCR")
+    sync_worker.drain()
+    commits_before_rename = len(repo_host.repos[REPO].commits)
+
+    rename(client, headers_for(participant), "tenzin-dorje")
+    sync_worker.drain()
+    assert len(repo_host.repos[REPO].commits) == commits_before_rename  # a rename does not resync
+
+    later = scored(name="Tesseract")
+    sync_worker.drain()
+
+    assert published_submitter(repo_host, earlier) == "tenzin"
+    assert published_submitter(repo_host, later) == "tenzin-dorje"

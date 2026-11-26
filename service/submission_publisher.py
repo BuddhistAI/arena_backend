@@ -65,10 +65,11 @@ _wylie = pyewts.pyewts()
 @dataclass(frozen=True)
 class PublishedSubmission:
     """A Submission's folder in the Challenge Repo and its files, keyed by
-    their path in the repo."""
+    their path in the repo, and the public username it is published under."""
 
     folder: str
     files: Dict[str, bytes]
+    submitter: str
 
 
 def submission_files(
@@ -96,7 +97,7 @@ def submission_files(
     metadata = submission_json(submission, submitter=submitter, scorer_name=scorer_name)
     files = {f"{folder}/{name}": content for name, content in artifact.items()}
     files[f"{folder}/{SUBMISSION_JSON}"] = json_bytes(metadata)
-    return PublishedSubmission(folder=folder, files=files)
+    return PublishedSubmission(folder=folder, files=files, submitter=submitter)
 
 
 def submission_folder(submission: Submission, taken_folders: AbstractSet[str] = frozenset()) -> str:

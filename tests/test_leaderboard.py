@@ -239,13 +239,13 @@ def test_a_prompt_or_skill_row_shows_its_preferred_model_and_offers_a_download(
 
 
 def test_a_row_credits_the_submitters_current_username_and_never_their_email_or_id(
-    client, db, headers_for, participant, challenge, submission_worker, clock
+    client, headers_for, participant, challenge, submission_worker, clock
 ):
     """After a rename the row shows the new username; the user's email and
     internal id appear nowhere in the response."""
     submit_scored(client, headers_for(participant), challenge, submission_worker, clock)
-    participant.username = "tenzin"  # renaming has no endpoint yet (ticket 08)
-    db.commit()
+    response = client.patch("/users/me", json={"username": "tenzin"}, headers=headers_for(participant))
+    assert response.status_code == 200, response.text
 
     response = client.get(f"/challenges/{challenge['id']}/leaderboard")
 
