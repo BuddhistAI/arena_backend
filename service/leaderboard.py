@@ -25,6 +25,7 @@ from models import Challenge, Submission, User
 from models.challenge import Direction
 from models.submission import SubmissionStatus, SubmissionType
 from service import scorer_catalogue
+from service.submission_download import download_path
 
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
@@ -48,9 +49,9 @@ class LeaderboardRow:
     preferred_model: Optional[str]
 
     @property
-    def has_download(self) -> bool:
-        """Prompts and Skills can be downloaded; a Model is found at its own host."""
-        return self.type != SubmissionType.MODEL
+    def download_url(self) -> Optional[str]:
+        """Where the row's Artifact downloads from, as its detail says; None for a Model."""
+        return download_path(self.submission_id, self.type)
 
 
 @dataclass(frozen=True)

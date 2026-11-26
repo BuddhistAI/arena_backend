@@ -218,14 +218,15 @@ def test_a_model_row_shows_its_type_name_submitter_and_no_preferred_model_or_dow
     assert row["submitter"] == "participant"
     assert row["created_at"].startswith("2026-11-20T08:15")
     assert row["preferred_model"] is None
-    assert row["has_download"] is False
+    assert row["download_url"] is None
 
 
 @pytest.mark.parametrize("submit_fn, submission_type", [(submit_prompt, "prompt"), (submit_skill, "skill")])
 def test_a_prompt_or_skill_row_shows_its_preferred_model_and_offers_a_download(
     client, headers_for, participant, challenge, submission_worker, clock, submit_fn, submission_type
 ):
-    """A Prompt or Skill row carries its type, the model it ran on and a download."""
+    """A Prompt or Skill row carries its type, the model it ran on and where
+    it downloads from, the same ``download_url`` its detail has."""
     submit_scored(
         client, headers_for(participant), challenge, submission_worker, clock,
         submit_fn=submit_fn, preferred_model="claude-opus-4-1",
@@ -235,7 +236,8 @@ def test_a_prompt_or_skill_row_shows_its_preferred_model_and_offers_a_download(
 
     assert row["type"] == submission_type
     assert row["preferred_model"] == "claude-opus-4-1"
-    assert row["has_download"] is True
+    assert row["download_url"] == f"/submissions/{row['submission_id']}/download"
+    assert client.get(row["download_url"], follow_redirects=False).status_code == 307
 
 
 def test_a_row_credits_the_submitters_current_username_and_never_their_email_or_id(

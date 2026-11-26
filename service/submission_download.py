@@ -33,6 +33,18 @@ class DownloadNotFound(Exception):
     """No scored, live Prompt or Skill has that id."""
 
 
+def is_downloadable(submission_type: SubmissionType) -> bool:
+    """Prompts and Skills can be downloaded; a Model is found at its own host.
+
+    Args:
+        submission_type: The Submission Type.
+
+    Returns:
+        Whether a Submission of that type has a download.
+    """
+    return submission_type in DOWNLOAD_EXTENSIONS
+
+
 def download_path(submission_id: uuid.UUID, submission_type: SubmissionType) -> Optional[str]:
     """The API path a Submission downloads from.
 
@@ -43,7 +55,7 @@ def download_path(submission_id: uuid.UUID, submission_type: SubmissionType) -> 
     Returns:
         The path, relative to the API root; None for a Model.
     """
-    if submission_type not in DOWNLOAD_EXTENSIONS:
+    if not is_downloadable(submission_type):
         return None
     return f"/submissions/{submission_id}/download"
 
@@ -67,7 +79,7 @@ def presigned_download_url(db: Session, storage: ObjectStorage, submission_id: u
     submission = db.get(Submission, submission_id)
     if (
         submission is None
-        or submission.type not in DOWNLOAD_EXTENSIONS
+        or not is_downloadable(submission.type)
         or not submission.is_live
         or submission.status != SubmissionStatus.COMPLETED
     ):

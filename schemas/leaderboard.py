@@ -22,7 +22,10 @@ class LeaderboardRowRead(BaseModel):
     preferred_model: Optional[str] = Field(
         None, description="Prompt and Skill: the model it was run with; null for a Model"
     )
-    has_download: bool = Field(..., description="Whether the Artifact can be downloaded (Prompt and Skill)")
+    download_url: Optional[str] = Field(
+        None,
+        description="Prompt and Skill: where to download the Artifact, relative to the API root; null for a Model",
+    )
 
     class Config:
         from_attributes = True
