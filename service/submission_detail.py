@@ -1,7 +1,8 @@
 """Submission detail: everything public about one Submission, for its page.
 
-``read_submission_detail`` is the only entry point; the HTTP endpoint is a
-thin wrapper. A scored (``completed``) Submission is public. One that is not
+``read_submission_detail`` is the entry point for the page, and
+``read_visible_submission`` applies the same visibility for other reads (the
+status a submitter polls); the HTTP endpoints are thin wrappers. A scored (``completed``) Submission is public. One that is not
 scored yet, or failed, is shown only to its submitter and admins, so they have
 one place to see why scoring failed. A deleted Submission is ``SubmissionGone``
 for everyone. Rank comes from the Leaderboard's own ranking, so the page and
@@ -82,13 +83,7 @@ def read_submission_detail(
             and the viewer is neither its submitter nor an admin.
         SubmissionGone: If the Submission was deleted.
     """
-    submission = db.get(Submission, submission_id)
-    if submission is None:
-        raise SubmissionNotFound(submission_id)
-    if not submission.is_live:
-        raise SubmissionGone(submission_id)
-    if submission.status != SubmissionStatus.COMPLETED and not _may_see_unscored(viewer, submission):
-        raise SubmissionNotFound(submission_id)
+    submission = read_visible_submission(db, submission_id, viewer=viewer)
     submitter = db.get(User, submission.user_id)
     return SubmissionDetail(
         id=submission.id,
@@ -113,6 +108,33 @@ def read_submission_detail(
         prompt_text=_prompt_text(submission, storage),
         download_url=download_path(submission.id, submission.type),
     )
+
+
+def read_visible_submission(db: Session, submission_id: uuid.UUID, *, viewer: Optional[User]) -> Submission:
+    """The Submission, if ``viewer`` may see it: a scored one is public; one
+    not scored yet, or failed, only to its submitter and admins.
+
+    Args:
+        db: Database session.
+        submission_id: The Submission to read.
+        viewer: The signed-in user, or None for an anonymous visitor.
+
+    Returns:
+        The Submission.
+
+    Raises:
+        SubmissionNotFound: If no Submission has that id, or it is not scored
+            and the viewer is neither its submitter nor an admin.
+        SubmissionGone: If the Submission was deleted.
+    """
+    submission = db.get(Submission, submission_id)
+    if submission is None:
+        raise SubmissionNotFound(submission_id)
+    if not submission.is_live:
+        raise SubmissionGone(submission_id)
+    if submission.status != SubmissionStatus.COMPLETED and not _may_see_unscored(viewer, submission):
+        raise SubmissionNotFound(submission_id)
+    return submission
 
 
 def _may_see_unscored(viewer: Optional[User], submission: Submission) -> bool:

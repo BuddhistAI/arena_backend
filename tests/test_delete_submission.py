@@ -29,8 +29,8 @@ def delete(client, submission_id, headers):
 
 
 def test_the_submitter_deletes_their_submission_and_it_is_gone(client, headers_for, participant, challenge):
-    """The submitter gets 204; reading the Submission then answers 410 Gone,
-    and its status 404."""
+    """The submitter gets 204; reading the Submission or its status then
+    answers 410 Gone."""
     headers = headers_for(participant)
     submission_id = submitted(client, headers, challenge)
 
@@ -38,7 +38,7 @@ def test_the_submitter_deletes_their_submission_and_it_is_gone(client, headers_f
 
     assert response.status_code == 204, response.text
     assert client.get(f"/submissions/{submission_id}", headers=headers).status_code == 410
-    assert client.get(f"/submissions/{submission_id}/status").status_code == 404
+    assert client.get(f"/submissions/{submission_id}/status", headers=headers).status_code == 410
 
 
 def test_an_admin_deletes_anyones_submission(client, headers_for, admin_headers, participant, challenge):

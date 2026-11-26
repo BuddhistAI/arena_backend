@@ -238,3 +238,60 @@ def test_an_unknown_submission_answers_404(client):
     response = client.get("/submissions/00000000-0000-0000-0000-000000000000")
 
     assert response.status_code == 404, response.text
+
+
+def test_an_anonymous_visitor_cannot_find_a_failed_submissions_status(client, failed_submission):
+    """Polling the status of someone's failed Submission while signed out
+    answers 404, as its detail does: its message is not public."""
+    response = client.get(f"/submissions/{failed_submission}/status")
+
+    assert response.status_code == 404, response.text
+
+
+def test_another_user_cannot_find_someone_elses_pending_submissions_status(
+    client, headers_for, participant, challenge, user_headers
+):
+    """Another signed-in user gets 404 polling a Submission still waiting to be scored."""
+    submission_id = submit(client, headers_for(participant), challenge).json()["id"]
+
+    response = client.get(f"/submissions/{submission_id}/status", headers=user_headers)
+
+    assert response.status_code == 404, response.text
+
+
+@pytest.mark.parametrize("who", ["submitter", "admin"])
+def test_the_submitter_and_admins_poll_a_failed_submissions_status_and_message(
+    client, headers_for, participant, admin_headers, failed_submission, who
+):
+    """The submitter and admins see why scoring failed when they poll its status."""
+    headers = {"submitter": headers_for(participant), "admin": admin_headers}[who]
+
+    response = client.get(f"/submissions/{failed_submission}/status", headers=headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "failed"
+    assert "invalid span" in response.json()["status_message"]
+
+
+def test_a_visitor_polls_a_scored_submissions_status(
+    client, headers_for, participant, challenge, submission_worker, clock
+):
+    """A scored Submission is public, so anyone may read its status."""
+    submission_id = submit_scored(client, headers_for(participant), challenge, submission_worker, clock)
+
+    response = client.get(f"/submissions/{submission_id}/status")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "completed"
+
+
+def test_a_deleted_submissions_status_answers_410(
+    client, headers_for, participant, challenge, submission_worker, clock
+):
+    """Polling a deleted Submission's status answers 410 Gone, as its detail does."""
+    submission_id = submit_scored(client, headers_for(participant), challenge, submission_worker, clock)
+    assert client.delete(f"/submissions/{submission_id}", headers=headers_for(participant)).status_code == 204
+
+    response = client.get(f"/submissions/{submission_id}/status", headers=headers_for(participant))
+
+    assert response.status_code == 410, response.text
