@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from typing import Annotated, List, Optional, Union
 from sqlalchemy.orm import Session
 import models
-from models.user import User
+from models.user import ADMIN_ROLE, User
 from database import get_db
 from schemas.submission import (
     DailyLimitResponse,
@@ -154,7 +154,7 @@ def delete_submission(
     It still counts toward that day's limit, and its Challenge stays Locked.
     """
     submission = _live_submission_or_404(db, submission_id)
-    if current_user.role != "admin" and submission.user_id != current_user.id:
+    if current_user.role != ADMIN_ROLE and submission.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="You can only delete your own submissions")
     delete_submission_and_files(db, storage, submission, at=clock())
 

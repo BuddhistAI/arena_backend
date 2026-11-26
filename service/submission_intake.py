@@ -251,7 +251,7 @@ class SubmissionIntake:
             id=stash.submission_id,
             user_id=user.id,
             challenge_id=challenge.id,
-            type=form.type,
+            type=SubmissionType(form.type),
             name=form.name,
             description=form.description,
             predictions_url=stash.put("predictions.jsonl", form.predictions, content_type="application/jsonl"),

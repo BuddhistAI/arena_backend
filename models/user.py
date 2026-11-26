@@ -3,6 +3,9 @@ from sqlalchemy.orm import relationship
 from database import Base
 import datetime
 
+ADMIN_ROLE = "admin"
+"""The ``User.role`` of admins."""
+
 class User(Base):
     __tablename__ = "user"
 

@@ -92,7 +92,7 @@ def submission_files(
         The folder, with ``submission.json`` and the Artifact's files in it.
     """
     folder = submission_folder(submission, taken_folders)
-    artifact = ARTIFACT_FILES[SubmissionType(submission.type)](submission, storage)
+    artifact = ARTIFACT_FILES[submission.type](submission, storage)
     metadata = submission_json(submission, submitter=submitter, scorer_name=scorer_name)
     files = {f"{folder}/{name}": content for name, content in artifact.items()}
     files[f"{folder}/{SUBMISSION_JSON}"] = _json_bytes(metadata)
@@ -118,7 +118,7 @@ def submission_folder(submission: Submission, taken_folders: AbstractSet[str] = 
 def _folder_with_id(submission: Submission, shown_id: str) -> str:
     slug = folder_slug(submission.name)
     name = f"{slug}-{shown_id}" if slug else shown_id
-    return f"{TYPE_FOLDERS[SubmissionType(submission.type)]}/{name}"
+    return f"{TYPE_FOLDERS[submission.type]}/{name}"
 
 
 def folder_slug(name: str) -> str:
@@ -153,7 +153,7 @@ def submission_json(submission: Submission, *, submitter: str, scorer_name: str)
         "schema_version": SCHEMA_VERSION,
         "submission_id": str(submission.id),
         "challenge_id": str(submission.challenge_id),
-        "type": submission.type,
+        "type": submission.type.value,
         "name": submission.name,
         "description": submission.description,
         "submitter": submitter,

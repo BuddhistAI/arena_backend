@@ -15,9 +15,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from models import Challenge, Submission, User
+from models.user import ADMIN_ROLE
 
 DAILY_SUBMISSION_LIMIT = 10
-EXEMPT_ROLE = "admin"
 
 
 class DailyLimitReached(Exception):
@@ -50,7 +50,7 @@ def check_daily_limit(db: Session, challenge: Challenge, user: User, now: dateti
     Raises:
         DailyLimitReached: The user already stored the limit today.
     """
-    if user.role == EXEMPT_ROLE:
+    if user.role == ADMIN_ROLE:
         return
     _lock_user_on_challenge(db, challenge, user)
     day_start = datetime.datetime.combine(now.date(), datetime.time())

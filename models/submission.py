@@ -5,7 +5,7 @@ from sqlalchemy.orm import Query, Session
 from sqlalchemy.sql.elements import ColumnElement
 from database import Base
 from models.challenge import SyncStatus
-from models.columns import one_of
+from models.columns import EnumString, one_of
 import datetime
 import uuid
 import enum
@@ -37,7 +37,7 @@ class Submission(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, unique=True, nullable=False)
     user_id = Column(String, ForeignKey("user.id"), nullable=False, index=True)
     challenge_id = Column(UUID(as_uuid=True), ForeignKey("challenge.id"), nullable=False, index=True)
-    type = Column(String, nullable=False)
+    type = Column(EnumString(SubmissionType), nullable=False)
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
     # Set only for Model Submissions: the model name, shared across Challenges.
