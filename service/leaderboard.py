@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, Subquery, func, or_, select
 from sqlalchemy.orm import Session
 
 from models import Challenge, Submission, User
@@ -71,25 +71,36 @@ class Leaderboard:
     """One page of a Challenge's Leaderboard."""
 
     scorer: LeaderboardScorer
+    counts: dict[str, int]
     page: int
     limit: int
     rows: List[LeaderboardRow]
 
 
 def read_leaderboard(
-    db: Session, challenge_id: uuid.UUID, *, page: int = 1, limit: int = DEFAULT_PAGE_SIZE
+    db: Session,
+    challenge_id: uuid.UUID,
+    *,
+    submission_type: Optional[SubmissionType] = None,
+    search: Optional[str] = None,
+    page: int = 1,
+    limit: int = DEFAULT_PAGE_SIZE,
 ) -> Leaderboard:
     """Rank a Challenge's scored Submissions and return one page of them.
 
     Args:
         db: Database session.
         challenge_id: The Challenge whose Leaderboard to read.
+        submission_type: Show only rows of this Submission Type; None for all.
+        search: Show only rows whose name, submitter username or Preferred
+            Model contains this text, ignoring case; None or blank for all.
         page: Which page, from 1.
         limit: Rows per page, from 1; cut to ``MAX_PAGE_SIZE``.
 
     Returns:
-        The Scorer block, the page and page size used, and that page's rows
-        in Rank order.
+        The Scorer block; how many rows the whole Leaderboard holds, in all
+        and per Submission Type, whatever the filter, search and page; the
+        page and page size used; and that page's rows in Rank order.
 
     Raises:
         ChallengeNotFound: If no live Challenge has that id.
@@ -100,9 +111,22 @@ def read_leaderboard(
     limit = min(limit, MAX_PAGE_SIZE)
     # Rank first over the whole Leaderboard; only then choose the rows shown.
     ranked = _ranked(challenge).subquery()
-    shown = select(ranked).order_by(ranked.c.rank).offset((page - 1) * limit).limit(limit)
+    shown = select(ranked)
+    if submission_type is not None:
+        shown = shown.where(ranked.c.type == submission_type)
+    if search and search.strip():
+        text = search.strip()
+        shown = shown.where(
+            or_(
+                ranked.c.name.icontains(text, autoescape=True),
+                ranked.c.submitter.icontains(text, autoescape=True),
+                ranked.c.preferred_model.icontains(text, autoescape=True),
+            )
+        )
+    shown = shown.order_by(ranked.c.rank).offset((page - 1) * limit).limit(limit)
     return Leaderboard(
         scorer=_scorer(challenge),
+        counts=_counts(db, ranked),
         page=page,
         limit=limit,
         rows=[LeaderboardRow(**row) for row in db.execute(shown).mappings()],
@@ -130,6 +154,13 @@ def read_scorer(challenge: Challenge) -> LeaderboardScorer:
     """The Scorer block of the Challenge's Leaderboard: what its Submissions
     are ranked by and how their numbers are shown."""
     return _scorer(challenge)
+
+
+def _counts(db: Session, ranked: Subquery) -> dict[str, int]:
+    """Rows of the whole Leaderboard, in all and per Submission Type."""
+    per_type = dict(db.execute(select(ranked.c.type, func.count()).group_by(ranked.c.type)).all())
+    counts = {kind.value: per_type.get(kind, 0) for kind in SubmissionType}
+    return {"all": sum(counts.values()), **counts}
 
 
 def _scorer(challenge: Challenge) -> LeaderboardScorer:

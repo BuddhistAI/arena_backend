@@ -239,13 +239,13 @@ def test_a_prompt_or_skill_row_shows_its_preferred_model_and_offers_a_download(
 
 
 def test_a_row_credits_the_submitters_current_username_and_never_their_email_or_id(
-    client, db, headers_for, participant, challenge, submission_worker, clock
+    client, headers_for, participant, challenge, submission_worker, clock
 ):
     """After a rename the row shows the new username; the user's email and
     internal id appear nowhere in the response."""
     submit_scored(client, headers_for(participant), challenge, submission_worker, clock)
-    participant.username = "tenzin"  # renaming has no endpoint yet (ticket 08)
-    db.commit()
+    response = client.patch("/users/me", json={"username": "tenzin"}, headers=headers_for(participant))
+    assert response.status_code == 200, response.text
 
     response = client.get(f"/challenges/{challenge['id']}/leaderboard")
 
@@ -326,3 +326,114 @@ def test_a_page_or_page_size_below_one_is_refused(client, challenge, params):
 
     assert response.status_code == 422, response.text
 
+
+
+@pytest.fixture(name="mixed_board")
+def mixed_board_fixture(client, headers_for, make_user, challenge, submission_worker, clock):
+    """Five exact Submissions, so tied and ranked in the order made:
+    1 Model, 2 Prompt, 3 Model, 4 Skill, 5 Prompt. Returns their ids by Rank."""
+    admin = make_user("admin", name="prolific")  # admins have no daily limit
+    headers = headers_for(admin)
+    return [
+        submit_scored(client, headers, challenge, submission_worker, clock, name="Google Vision OCR"),
+        submit_scored(
+            client, headers, challenge, submission_worker, clock,
+            submit_fn=submit_prompt, name="Careful transcriber", preferred_model="claude-opus-4-1",
+        ),
+        submit_scored(client, headers, challenge, submission_worker, clock, name="Whisper large-v3"),
+        submit_scored(
+            client, headers, challenge, submission_worker, clock,
+            submit_fn=submit_skill, name="Tibetan OCR skill", preferred_model="gpt-5",
+        ),
+        submit_scored(
+            client, headers, challenge, submission_worker, clock,
+            submit_fn=submit_prompt, name="Line by line", preferred_model="Claude-Sonnet-4-5",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "submission_type, expected_ranks",
+    [("model", [1, 3]), ("prompt", [2, 5]), ("skill", [4])],
+)
+def test_filtering_by_submission_type_hides_other_rows_without_changing_a_rank(
+    client, challenge, mixed_board, submission_type, expected_ranks
+):
+    """The Prompt tab shows the Prompts ranked #2 and #5 overall as #2 and #5."""
+    board = leaderboard(client, challenge, type=submission_type)
+
+    assert ranked_ids(board) == [(mixed_board[rank - 1], rank) for rank in expected_ranks]
+
+
+@pytest.mark.parametrize(
+    "q, expected_ranks",
+    [
+        ("WHISPER", [3]),  # Submission name, any case
+        ("claude", [2, 5]),  # Preferred Model, any case
+        ("by l", [5]),  # a substring from mid-name
+    ],
+)
+def test_searching_hides_rows_that_do_not_match_without_changing_a_rank(
+    client, challenge, mixed_board, q, expected_ranks
+):
+    """Search is a case-insensitive substring match over the name and the
+    Preferred Model; the rows found keep their overall Rank."""
+    board = leaderboard(client, challenge, q=q)
+
+    assert ranked_ids(board) == [(mixed_board[rank - 1], rank) for rank in expected_ranks]
+
+
+def test_searching_finds_a_submitters_rows_by_their_username(
+    client, headers_for, make_user, challenge, mixed_board, submission_worker, clock
+):
+    """Searching part of a username, in any case, finds that submitter's rows
+    at their overall Rank."""
+    tenzin = make_user("user", name="Tenzin")
+    sixth = submit_scored(client, headers_for(tenzin), challenge, submission_worker, clock)
+
+    assert ranked_ids(leaderboard(client, challenge, q="tENz")) == [(sixth, 6)]
+
+
+def test_search_text_is_matched_literally(client, challenge, mixed_board):
+    """A ``%`` or ``_`` in the search is a character to find, not a wildcard."""
+    assert leaderboard(client, challenge, q="%")["rows"] == []
+    assert leaderboard(client, challenge, q="_")["rows"] == []
+
+
+def test_a_type_filter_and_a_search_together_show_rows_matching_both(client, challenge, mixed_board):
+    """"OCR" names a Model (#1) and a Skill (#4); on the Skill tab it finds
+    only the Skill, still #4."""
+    board = leaderboard(client, challenge, type="skill", q="ocr")
+
+    assert ranked_ids(board) == [(mixed_board[3], 4)]
+
+
+def test_an_unknown_submission_type_is_refused(client, challenge):
+    """Only model, prompt and skill are Submission Types; anything else answers 422."""
+    response = client.get(f"/challenges/{challenge['id']}/leaderboard", params={"type": "dataset"})
+
+    assert response.status_code == 422, response.text
+
+
+@pytest.mark.parametrize(
+    "params",
+    [{}, {"type": "skill"}, {"q": "whisper"}, {"page": 2, "limit": 2}],
+    ids=["all", "type filter", "search", "paging"],
+)
+def test_counts_per_submission_type_ignore_the_filter_search_and_paging(client, challenge, mixed_board, params):
+    """Two Models, two Prompts and one Skill are counted the same whatever
+    rows are shown."""
+    assert leaderboard(client, challenge, **params)["counts"] == {"all": 5, "model": 2, "prompt": 2, "skill": 1}
+
+
+def test_counts_leave_out_unscored_and_deleted_submissions(
+    client, headers_for, participant, challenge, submission_worker, clock
+):
+    """Only ranked Submissions are counted: a pending one and a deleted one are not."""
+    headers = headers_for(participant)
+    submit_scored(client, headers, challenge, submission_worker, clock)
+    deleted = submit_scored(client, headers, challenge, submission_worker, clock, submit_fn=submit_prompt)
+    assert client.delete(f"/submissions/{deleted}", headers=headers).status_code == 204
+    submit_skill(client, headers, challenge)
+
+    assert leaderboard(client, challenge)["counts"] == {"all": 1, "model": 1, "prompt": 0, "skill": 0}

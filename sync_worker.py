@@ -143,7 +143,7 @@ class SyncWorker:
                 self._archive(challenge)
             else:
                 for submission, published in self._publish(challenge):
-                    submission.mark_synced(published.folder)
+                    submission.mark_synced(published.folder, submitter=published.submitter)
         except Exception as exc:
             challenge.record_failed_sync(_describe(exc), at=self.clock(), max_attempts=MAX_ATTEMPTS)
             if challenge.sync_status == SyncStatus.FAILED:
@@ -194,8 +194,10 @@ class SyncWorker:
 
     def _published_submissions(self, challenge: Challenge) -> List[Tuple[Submission, PublishedSubmission]]:
         """The Challenge's scored, not deleted Submissions, oldest first, each
-        with its folder. A Submission whose Artifact is missing from storage
-        is left out and marked ``failed``; the others publish."""
+        with its folder. A Submission already published keeps the username it
+        was published under; the others take the submitter's current one. A
+        Submission whose Artifact is missing from storage is left out and
+        marked ``failed``; the others publish."""
         rows = (
             object_session(challenge)
             .query(Submission, User.username)
@@ -213,7 +215,7 @@ class SyncWorker:
             try:
                 files = submission_files(
                     submission,
-                    submitter=username,
+                    submitter=submission.published_submitter or username,
                     scorer_name=challenge.scorer_name,
                     storage=self.storage,
                     taken_folders={folder.folder for _, folder in published},
