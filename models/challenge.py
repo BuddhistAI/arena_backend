@@ -22,6 +22,11 @@ class Direction(str, enum.Enum):
     HIGHER_IS_BETTER = "higher_is_better"
 
 
+def utc_now() -> datetime.datetime:
+    """Now in naive UTC, like the Challenge timestamp columns."""
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
+
 def _one_of(column: str, values: type) -> str:
     """SQL check that ``column`` holds one of the enum's values."""
     return f"{column} IN ({', '.join(repr(member.value) for member in values)})"
@@ -82,3 +87,25 @@ class Challenge(Base):
 
     # Relationship to Category
     category = relationship("Category", back_populates="challenges")
+
+    def queue_sync(self) -> None:
+        """Leave the Challenge to the Sync Worker with a fresh round of
+        attempts: after a create, an edit, a delete or a Resync."""
+        self.sync_status = SyncStatus.PENDING
+        self.sync_attempts = 0
+        self.last_sync_error = None
+
+    def mark_synced(self) -> None:
+        """The repo now matches the arena (or, once deleted, is archived)."""
+        self.sync_status = SyncStatus.SYNCED
+        self.sync_attempts = 0
+        self.last_sync_error = None
+
+    def record_failed_sync(self, error: str, at: datetime.datetime, max_attempts: int) -> None:
+        """Count a failed attempt made ``at``; after ``max_attempts`` in a row
+        the Challenge is ``failed`` and waits for a Resync."""
+        self.sync_attempts = (self.sync_attempts or 0) + 1
+        self.last_sync_error = error
+        self.updated_at = at
+        if self.sync_attempts >= max_attempts:
+            self.sync_status = SyncStatus.FAILED

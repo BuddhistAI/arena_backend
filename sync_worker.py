@@ -24,12 +24,12 @@ Tests call ``drain``, which retries without waiting until nothing is pending.
 
 import logging
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Callable, List, Optional
 
 from sqlalchemy.orm import Session
 
-from models.challenge import Challenge, SyncStatus
+from models.challenge import Challenge, SyncStatus, utc_now
 from ports.object_storage import ObjectStorage
 from ports.repo_host import RepoAlreadyExists, RepoHost, RepoNotFound
 from service.challenge_publisher import MAX_COMMITTED_INPUTS_BYTES, challenge_files
@@ -40,11 +40,6 @@ COMMIT_MESSAGE = "Sync challenge from the BuddhistAI arena"
 MAX_ATTEMPTS = 5
 DEFAULT_BACKOFF = timedelta(seconds=30)
 DEFAULT_POLL_INTERVAL_SECONDS = 10.0
-
-
-def utc_now() -> datetime:
-    """Naive UTC, like the Challenge timestamp columns."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class SyncWorker:
@@ -135,20 +130,14 @@ class SyncWorker:
             else:
                 self._publish(challenge)
         except Exception as exc:
-            challenge.sync_attempts = (challenge.sync_attempts or 0) + 1
-            challenge.last_sync_error = _describe(exc)
-            challenge.updated_at = self.clock()
-            if challenge.sync_attempts >= MAX_ATTEMPTS:
-                challenge.sync_status = SyncStatus.FAILED
+            challenge.record_failed_sync(_describe(exc), at=self.clock(), max_attempts=MAX_ATTEMPTS)
             logger.warning(
                 "Sync of Challenge %s (%s) failed, attempt %d of %d: %s",
                 challenge.id, challenge.repo_name, challenge.sync_attempts, MAX_ATTEMPTS,
                 challenge.last_sync_error,
             )
         else:
-            challenge.sync_status = SyncStatus.SYNCED
-            challenge.sync_attempts = 0
-            challenge.last_sync_error = None
+            challenge.mark_synced()
             action = "Archived the repo of" if challenge.deleted_at is not None else "Synced"
             logger.info("%s Challenge %s (%s)", action, challenge.id, challenge.repo_name)
 

@@ -18,8 +18,7 @@ import logging
 import re
 import unicodedata
 import uuid
-from datetime import datetime, timezone
-from models.challenge import SyncStatus
+from models.challenge import utc_now
 from ports.object_storage import ObjectStorage, get_object_storage, private_key, public_key
 from service import scorer_catalogue
 from service.challenge_data import (
@@ -61,13 +60,6 @@ def _challenge_or_404(db: Session, challenge_id: UUID) -> Challenge:
     if challenge is None:
         raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
     return challenge
-
-
-def _queue_sync(challenge: Challenge) -> None:
-    """Leave the Challenge to the Sync Worker with a fresh round of attempts."""
-    challenge.sync_status = SyncStatus.PENDING
-    challenge.sync_attempts = 0
-    challenge.last_sync_error = None
 
 
 # for listing all challenges
@@ -227,10 +219,9 @@ def create_new_challenge(
         scorer_params=validated.params,
         package_version=scorer_catalogue.PACKAGE_VERSION,
         repo_name=repo_name,
-        sync_status=SyncStatus.PENDING,
-        sync_attempts=0,
         **keys,
     )
+    challenge.queue_sync()
     db.add(challenge)
     _commit_or_discard(db, storage, keys.values(), title)
     db.refresh(challenge)
@@ -417,7 +408,7 @@ def update_challenge(
         challenge.scorer_params = validated.params
         challenge.package_version = scorer_catalogue.PACKAGE_VERSION
     # New content, so a fresh round of sync attempts.
-    _queue_sync(challenge)
+    challenge.queue_sync()
     _commit_or_discard(db, storage, keys.values(), sent.get("title"))
     _delete_quietly(storage, replaced)
     db.refresh(challenge)
@@ -517,7 +508,7 @@ def resync_challenge(
     deleted Challenge it retries archiving the repo instead.
     """
     challenge = _challenge_or_404(db, challenge_id)
-    _queue_sync(challenge)
+    challenge.queue_sync()
     db.commit()
     db.refresh(challenge)
     return challenge
@@ -542,9 +533,9 @@ def delete_challenge(
     is kept as a tombstone, so the repo name is never reused.
     """
     challenge = _live_challenge_or_404(db, challenge_id)
-    deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    deleted_at = utc_now()
     challenge.deleted_at = deleted_at
-    _queue_sync(challenge)
+    challenge.queue_sync()
     db.commit()
     logging.info("Challenge %s (%s) deleted; its repo will be archived", challenge.id, challenge.repo_name)
     return {
