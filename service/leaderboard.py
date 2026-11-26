@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, Subquery, func, or_, select
 from sqlalchemy.orm import Session
 
 from models import Challenge, Submission, User
@@ -71,6 +71,7 @@ class Leaderboard:
     """One page of a Challenge's Leaderboard."""
 
     scorer: LeaderboardScorer
+    counts: dict[str, int]
     page: int
     limit: int
     rows: List[LeaderboardRow]
@@ -97,8 +98,9 @@ def read_leaderboard(
         limit: Rows per page, from 1; cut to ``MAX_PAGE_SIZE``.
 
     Returns:
-        The Scorer block, the page and page size used, and that page's rows
-        in Rank order.
+        The Scorer block; how many rows the whole Leaderboard holds, in all
+        and per Submission Type, whatever the filter, search and page; the
+        page and page size used; and that page's rows in Rank order.
 
     Raises:
         ChallengeNotFound: If no live Challenge has that id.
@@ -124,10 +126,18 @@ def read_leaderboard(
     shown = shown.order_by(ranked.c.rank).offset((page - 1) * limit).limit(limit)
     return Leaderboard(
         scorer=_scorer(challenge),
+        counts=_counts(db, ranked),
         page=page,
         limit=limit,
         rows=[LeaderboardRow(**row) for row in db.execute(shown).mappings()],
     )
+
+
+def _counts(db: Session, ranked: Subquery) -> dict[str, int]:
+    """Rows of the whole Leaderboard, in all and per Submission Type."""
+    per_type = dict(db.execute(select(ranked.c.type, func.count()).group_by(ranked.c.type)).all())
+    counts = {kind.value: per_type.get(kind, 0) for kind in SubmissionType}
+    return {"all": sum(counts.values()), **counts}
 
 
 def _scorer(challenge: Challenge) -> LeaderboardScorer:

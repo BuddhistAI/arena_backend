@@ -413,3 +413,27 @@ def test_an_unknown_submission_type_is_refused(client, challenge):
     response = client.get(f"/challenges/{challenge['id']}/leaderboard", params={"type": "dataset"})
 
     assert response.status_code == 422, response.text
+
+
+@pytest.mark.parametrize(
+    "params",
+    [{}, {"type": "skill"}, {"q": "whisper"}, {"page": 2, "limit": 2}],
+    ids=["all", "type filter", "search", "paging"],
+)
+def test_counts_per_submission_type_ignore_the_filter_search_and_paging(client, challenge, mixed_board, params):
+    """Two Models, two Prompts and one Skill are counted the same whatever
+    rows are shown."""
+    assert leaderboard(client, challenge, **params)["counts"] == {"all": 5, "model": 2, "prompt": 2, "skill": 1}
+
+
+def test_counts_leave_out_unscored_and_deleted_submissions(
+    client, headers_for, participant, challenge, submission_worker, clock
+):
+    """Only ranked Submissions are counted: a pending one and a deleted one are not."""
+    headers = headers_for(participant)
+    submit_scored(client, headers, challenge, submission_worker, clock)
+    deleted = submit_scored(client, headers, challenge, submission_worker, clock, submit_fn=submit_prompt)
+    assert client.delete(f"/submissions/{deleted}", headers=headers).status_code == 204
+    submit_skill(client, headers, challenge)
+
+    assert leaderboard(client, challenge)["counts"] == {"all": 1, "model": 1, "prompt": 0, "skill": 0}
