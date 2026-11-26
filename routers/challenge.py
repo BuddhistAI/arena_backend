@@ -1,28 +1,68 @@
-from fastapi import APIRouter, status, HTTPException, Depends, Path, Body, UploadFile, File, Form
-from fastapi.responses import StreamingResponse
-from typing import Annotated, List, Optional
+from fastapi import APIRouter, status, HTTPException, Depends, Path, Form, File, UploadFile
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
+from dataclasses import dataclass
+from typing import Annotated, Dict, Iterable, List, Optional
 from sqlalchemy.orm import Session
 import models
 from models import Challenge
 from models.user import User
 from database import get_db
-from schemas.challenge import ChallengeCreate, ChallengeRead, ChallengeWithCategoryRead
+from schemas.challenge import ChallengeAdminRead, ChallengeRead, ChallengeWithCategoryRead
 from uuid import UUID
 from sqlalchemy.orm import joinedload
-from CRUD.ground_truth_upload_s3 import process_ground_truth_file
-from auth import get_current_active_user
-import logging
-import uuid
-import requests
+from auth import require_admin
 import io
-from datetime import datetime
+import json
+import logging
+import re
+import unicodedata
+import uuid
+from models.challenge import utc_now
+from ports.object_storage import ObjectStorage, get_object_storage, private_key, public_key
+from service import scorer_catalogue
+from service.challenge_data import (
+    DATA_FIELDS,
+    GROUND_TRUTH_FIELD,
+    INPUTS_FIELD,
+    MEDIA_ARCHIVE_FIELD,
+    SCORER_NAME_FIELD,
+    SCORER_PARAMS_FIELD,
+    ChallengeDataError,
+    InvalidChallengeData,
+    media_archive_size_limit,
+    validate_challenge_data,
+)
 
 # Constants
 CHALLENGE_NOT_FOUND_MESSAGE = "Challenge not found"
+# GitHub allows 100 characters in a repo name; leave room for "challenge-".
+REPO_SLUG_MAX_LENGTH = 89
 
 router = APIRouter(prefix="/challenges", tags=["challenges"])
 
 db_dependency = Annotated[Session, Depends(get_db)]
+
+
+def _live_challenges(db: Session):
+    """Challenges that are not deleted: a deleted Challenge is a tombstone the
+    arena no longer shows (see ``Challenge.deleted_at``)."""
+    return db.query(Challenge).filter(Challenge.deleted_at.is_(None))
+
+
+def _live_challenge_or_404(db: Session, challenge_id: UUID) -> Challenge:
+    challenge = _live_challenges(db).filter(Challenge.id == challenge_id).one_or_none()
+    if challenge is None:
+        raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
+    return challenge
+
+
+def _challenge_or_404(db: Session, challenge_id: UUID) -> Challenge:
+    """Any Challenge, deleted ones included: for admin reads and Resync."""
+    challenge = db.get(Challenge, challenge_id)
+    if challenge is None:
+        raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
+    return challenge
 
 
 # for listing all challenges
@@ -31,340 +71,493 @@ db_dependency = Annotated[Session, Depends(get_db)]
 async def list_challenges_with_category(db: db_dependency):
     try:
         # Eager load the category relationship
-        challenges = db.query(Challenge).options(joinedload(Challenge.category)).all()
+        challenges = _live_challenges(db).options(joinedload(Challenge.category)).all()
         return challenges
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# for admins: every Challenge, deleted ones included, with its sync state
+
+@router.get(
+    "/admin/list",
+    response_model=List[ChallengeAdminRead],
+    summary="List every challenge, deleted ones included (admin)",
+    responses={403: {"description": "The signed-in user is not an admin."}},
+)
+def admin_list_challenges(db: db_dependency, current_user: User = Depends(require_admin)):
+    """Every Challenge with its storage keys, sync status and last sync error,
+    including deleted ones (whose repo archiving may have failed)."""
+    return (
+        db.query(Challenge)
+        .options(joinedload(Challenge.category))
+        .order_by(Challenge.created_at)
+        .all()
+    )
+
+
+@router.get(
+    "/admin/{challenge_id}",
+    response_model=ChallengeAdminRead,
+    summary="Read a challenge, even a deleted one (admin)",
+    responses={403: {"description": "The signed-in user is not an admin."}},
+)
+def admin_get_challenge(
+    db: db_dependency,
+    current_user: User = Depends(require_admin),
+    challenge_id: UUID = Path(..., description="This is the ID of the challenge"),
+):
+    return _challenge_or_404(db, challenge_id)
 
 
 # for getting a specific challenge
 
 @router.get("/{challenge_id}", response_model=ChallengeRead)
 async def get_challenge(db: db_dependency, challenge_id: UUID = Path(..., description="This is the ID of the challenge")):
-    challenge = db.query(Challenge).filter(Challenge.id == challenge_id).first()
-    if not challenge:
-        raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
-    return challenge
+    return _live_challenge_or_404(db, challenge_id)
 
-# for downloading ground truth file of a specific challenge
+# for creating a challenge
 
-@router.get("/{challenge_id}/download-ground-truth")
-async def download_ground_truth(
-    db: db_dependency, 
-    challenge_id: UUID = Path(..., description="This is the ID of the challenge")
-):
-    """
-    Download the ground truth file for a specific challenge.
-    
-    Returns the ground truth JSON file as a downloadable attachment.
-    """
-    try:
-        # Find the challenge
-        challenge = db.query(Challenge).filter(Challenge.id == challenge_id).first()
-        if not challenge:
-            raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
-        
-        # Check if ground truth URL exists
-        if not challenge.ground_truth:
-            raise HTTPException(
-                status_code=404, 
-                detail="Ground truth file not found for this challenge"
-            )
-        
-        logging.info(f"Downloading ground truth for challenge {challenge_id}: {challenge.ground_truth}")
-        
-        # Download the file from S3 URL
-        try:
-            # Disable SSL verification for S3 URLs to avoid certificate issues with custom bucket names
-            verify_ssl = False if 'amazonaws.com' in challenge.ground_truth else True
-            response = requests.get(challenge.ground_truth, timeout=30, verify=verify_ssl)
-            response.raise_for_status()  # Raises exception for bad status codes
-            
-            # Get file content
-            file_content = response.content
-            
-            # Extract filename from URL or use default
-            filename = f"ground_truth_{challenge.title.replace(' ', '_')}_{challenge_id}.json"
-            if '/' in challenge.ground_truth:
-                url_filename = challenge.ground_truth.split('/')[-1]
-                if url_filename.endswith('.json'):
-                    filename = url_filename
-            
-            # Create a streaming response
-            return StreamingResponse(
-                io.BytesIO(file_content),
-                media_type="application/json",
-                headers={
-                    "Content-Disposition": f"attachment; filename={filename}",
-                    "Content-Length": str(len(file_content))
-                }
-            )
-            
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Failed to download ground truth from S3: {str(e)}")
-            raise HTTPException(
-                status_code=503,
-                detail=f"Failed to download ground truth file: {str(e)}"
-            )
-        except Exception as e:
-            logging.error(f"Unexpected error downloading ground truth: {str(e)}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Internal server error while downloading ground truth: {str(e)}"
-            )
-            
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        raise
-    except Exception as e:
-        logging.error(f"Unexpected error in download_ground_truth endpoint: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
+def repo_name_for(title: str, challenge_id: uuid.UUID) -> str:
+    """``challenge-<slug-of-title>``: ASCII letters and digits, lowercased,
+    other runs of characters collapsed to one hyphen. A title with no ASCII
+    letter or digit (e.g. all Tibetan) gives ``challenge-<short id>``, the
+    first 8 hex digits of the Challenge id."""
+    ascii_title = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode()
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_title.lower()).strip("-")
+    slug = slug[:REPO_SLUG_MAX_LENGTH].strip("-")
+    return f"challenge-{slug or challenge_id.hex[:8]}"
 
-# For creating a new challenge with ground truth file.
+
+def _invalid(errors: List[ChallengeDataError]) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "detail": "The Challenge data is invalid.",
+            "errors": [error.to_dict() for error in errors],
+        },
+    )
+
 
 @router.post(
-    "/create", 
-    response_model=ChallengeRead, 
+    "/create",
+    response_model=ChallengeAdminRead,
     status_code=status.HTTP_201_CREATED,
     summary="Create a new challenge",
-    description="Create a new challenge with optional ground truth file upload"
+    responses={
+        403: {"description": "The signed-in user is not an admin."},
+        409: {"description": "The title, or the repo name derived from it, is taken."},
+        422: {"description": "Invalid data: ``errors`` lists each problem."},
+    },
 )
-async def create_new_challenge(
+def create_new_challenge(
     db: db_dependency,
-    current_user: User = Depends(get_current_active_user),
-    title: str = Form(..., description="Challenge title"),
+    current_user: User = Depends(require_admin),
+    storage: ObjectStorage = Depends(get_object_storage),
+    max_media_archive_bytes: int = Depends(media_archive_size_limit),
+    title: str = Form(..., description="Challenge title; also names the Challenge Repo"),
     category_id: UUID = Form(..., description="Category ID"),
     image_uri: Optional[str] = Form(None, description="Challenge image URL"),
     description: Optional[str] = Form(None, description="Challenge description"),
-    status: Optional[str] = Form("active", description="Challenge status"),
-    ground_truth_file: UploadFile = File(None, description="Ground truth JSON file for the challenge (optional)")
+    challenge_status: Optional[str] = Form("active", alias="status", description="Challenge status"),
+    scorer_name: str = Form(..., description="Name of a Scorer from GET /scorers"),
+    scorer_params: str = Form("{}", description="The Scorer's parameters as a JSON object"),
+    inputs_file: UploadFile = File(..., description="Inputs JSONL: {id, input, media?} rows"),
+    ground_truth_file: UploadFile = File(..., description="Ground Truth JSONL: {id, reference} rows"),
+    media_archive_file: Optional[UploadFile] = File(None, description="Optional Media Archive (zip)"),
 ):
     """
-    Create a new challenge with optional ground truth file upload.
-    
-    If ground_truth_file is provided, it will be uploaded to S3 and the URL will be stored.
-    If not provided, the ground_truth field will be left empty and can be added later via update.
+    Create a Challenge (admin only). The files are validated against the
+    Scorer; the Inputs and Media Archive are stored publicly and the Ground
+    Truth privately. The Challenge starts with sync status ``pending``; the
+    Sync Worker publishes its Challenge Repo later.
     """
+    title = title.strip()
+    errors: List[ChallengeDataError] = []
+    _existing_category_id(db, category_id, errors)
+
+    media_archive = media_archive_file.file if media_archive_file is not None else None
     try:
-        logging.info(f"Creating new challenge: {title}")
-        
-        # Check if challenge title already exists
-        existing_challenge = db.query(Challenge).filter(Challenge.title == title).first()
-        if existing_challenge:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Challenge with title '{title}' already exists. Please choose a different title."
-            )
-        
-        # Create challenge instance without ground_truth initially
-        challenge_data = {
-            "title": title,
-            "category_id": category_id,
-            "created_by": current_user.id,  # Get user ID from authenticated token
-            "image_uri": image_uri,
-            "description": description,
-            "status": status,
-            "ground_truth": ""  # Will be updated if file is provided
-        }
-        
-        challenge_instance = Challenge(**challenge_data)
-        db.add(challenge_instance)
-        db.flush()  # Get the ID without committing
-        
-        # Handle ground truth file upload if provided
-        if ground_truth_file and ground_truth_file.filename:
-            logging.info(f"Processing ground truth file: {ground_truth_file.filename}")
-            
-            # Use CRUD function to handle all file processing
-            success, message, s3_url = await process_ground_truth_file(
-                file=ground_truth_file,
-                challenge_id=challenge_instance.id,
-                challenge_title=title
-            )
-            
-            if not success:
-                raise HTTPException(
-                    status_code=400,
-                    detail=message
-                )
-            
-            # Update challenge with ground truth URL
-            challenge_instance.ground_truth = s3_url
-            logging.info(f"Ground truth uploaded successfully: {s3_url}")
-        
-        # Commit the challenge
-        db.commit()
-        db.refresh(challenge_instance)
-        
-        logging.info(f"Challenge created successfully: {challenge_instance.id}")
-        return challenge_instance
-        
-    except HTTPException:
-        db.rollback()
+        validated = validate_challenge_data(
+            inputs=inputs_file.file.read(),
+            ground_truth=ground_truth_file.file.read(),
+            scorer_name=scorer_name,
+            scorer_params=scorer_params,
+            media_archive=media_archive,
+            max_media_archive_bytes=max_media_archive_bytes,
+        )
+    except InvalidChallengeData as exc:
+        errors.extend(exc.errors)
+    if errors:
+        return _invalid(errors)
+
+    challenge_id = uuid.uuid4()
+    repo_name = repo_name_for(title, challenge_id)
+    _refuse_taken_title(db, title)
+    clash = db.query(Challenge).filter(Challenge.repo_name == repo_name).first()
+    if clash:
+        raise HTTPException(
+            status_code=409,
+            detail=f"The title gives the repo name {repo_name!r}, already used by the Challenge {clash.title!r}.",
+        )
+
+    keys = _store_uploads(storage, challenge_id, {
+        INPUTS_FIELD: inputs_file.file,
+        GROUND_TRUTH_FIELD: ground_truth_file.file,
+        MEDIA_ARCHIVE_FIELD: media_archive,
+    })
+    challenge = Challenge(
+        id=challenge_id,
+        title=title,
+        category_id=category_id,
+        image_uri=image_uri or None,
+        description=description,
+        status=challenge_status or "active",
+        created_by=current_user.id,
+        repo_name=repo_name,
+        **keys,
+    )
+    challenge.apply_scorer(validated)
+    challenge.queue_sync()
+    db.add(challenge)
+    _commit_or_discard(db, storage, keys.values(), title)
+    db.refresh(challenge)
+    return challenge
+
+
+@dataclass(frozen=True)
+class _StoredFile:
+    """An uploaded file: its form field, the Challenge column holding its
+    storage key, its object name and whether it is public."""
+
+    field: str
+    column: str
+    filename: str
+    content_type: str
+    public: bool
+
+
+STORED_FILES = (
+    _StoredFile(INPUTS_FIELD, "inputs_key", "inputs.jsonl", "application/jsonl", public=True),
+    _StoredFile(GROUND_TRUTH_FIELD, "ground_truth_key", "ground_truth.jsonl", "application/jsonl", public=False),
+    _StoredFile(MEDIA_ARCHIVE_FIELD, "media_archive_key", "media.zip", "application/zip", public=True),
+)
+
+
+def _new_key(challenge_id: UUID, stored: _StoredFile) -> str:
+    """``challenges/<id>/<upload id>/<file name>`` under the public or private
+    prefix. Every upload gets a new key, so a replacement never overwrites an
+    object the database still points at."""
+    make_key = public_key if stored.public else private_key
+    return make_key("challenges", str(challenge_id), uuid.uuid4().hex, stored.filename)
+
+
+def _store_uploads(storage: ObjectStorage, challenge_id: UUID, uploads: dict) -> Dict[str, str]:
+    """Put each upload (form field -> file object, None for none) under a new
+    key and return Challenge column -> key. If one put fails, the objects
+    already stored are deleted."""
+    keys: Dict[str, str] = {}
+    try:
+        for stored in STORED_FILES:
+            if uploads.get(stored.field) is not None:
+                key = _new_key(challenge_id, stored)
+                _put(storage, key, uploads[stored.field], stored.content_type)
+                keys[stored.column] = key
+    except Exception:
+        _delete_quietly(storage, keys.values())
         raise
-    except Exception as e:
+    return keys
+
+
+def _commit_or_discard(db: Session, storage: ObjectStorage, new_keys: Iterable[str], title: Optional[str]) -> None:
+    """Commit; if that fails, delete the objects just stored for it, which no
+    row points at."""
+    try:
+        db.commit()
+    except IntegrityError:
         db.rollback()
-        logging.error(f"Unexpected error creating challenge: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        _delete_quietly(storage, new_keys)
+        raise _title_taken(title)
+    except Exception:
+        db.rollback()
+        _delete_quietly(storage, new_keys)
+        raise
 
-# for updating a challenge
 
-@router.patch("/update/{challenge_id}", response_model=ChallengeRead, status_code=status.HTTP_200_OK)
-async def update_challenge(
+def _title_taken(title: Optional[str]) -> HTTPException:
+    return HTTPException(status_code=409, detail=f"A Challenge titled {title!r} already exists.")
+
+
+def _refuse_taken_title(db: Session, title: str, challenge_id: Optional[UUID] = None) -> None:
+    """409 if another Challenge, deleted ones included, has the title."""
+    others = db.query(Challenge).filter(Challenge.title == title)
+    if challenge_id is not None:
+        others = others.filter(Challenge.id != challenge_id)
+    if others.first():
+        raise _title_taken(title)
+
+
+def _delete_quietly(storage: ObjectStorage, keys: Iterable[str]) -> None:
+    for key in list(keys):
+        try:
+            storage.delete(key)
+        except Exception:
+            logging.exception("Could not delete the unused object %s", key)
+
+# for editing a challenge
+
+
+@router.patch(
+    "/update/{challenge_id}",
+    response_model=ChallengeAdminRead,
+    status_code=status.HTTP_200_OK,
+    summary="Edit a challenge",
+    responses={
+        403: {"description": "The signed-in user is not an admin."},
+        409: {"description": "The Challenge is Locked and a file was sent or the Scorer or parameters changed, or the title is taken."},
+        422: {"description": "Invalid data: ``errors`` lists each problem."},
+    },
+)
+def update_challenge(
     db: db_dependency,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_admin),
+    storage: ObjectStorage = Depends(get_object_storage),
+    max_media_archive_bytes: int = Depends(media_archive_size_limit),
     challenge_id: UUID = Path(..., description="This is the ID of the challenge to update"),
-    title: Optional[str] = Form(None, description="Challenge title"),
+    title: Optional[str] = Form(None, description="Challenge title (does not rename the repo)"),
     category_id: Optional[str] = Form(None, description="Category ID"),
     image_uri: Optional[str] = Form(None, description="Challenge image URL"),
     description: Optional[str] = Form(None, description="Challenge description"),
-    status: Optional[str] = Form(None, description="Challenge status"),
-    ground_truth_file: UploadFile = File(None, description="Ground truth JSON file to replace existing one (optional)")
+    challenge_status: Optional[str] = Form(None, alias="status", description="Challenge status"),
+    scorer_name: Optional[str] = Form(None, description="Name of a Scorer from GET /scorers"),
+    scorer_params: Optional[str] = Form(
+        None, description="The Scorer's parameters as a JSON object. Omitted with a new Scorer: its defaults"
+    ),
+    inputs_file: Optional[UploadFile] = File(None, description="Replacement Inputs JSONL"),
+    ground_truth_file: Optional[UploadFile] = File(None, description="Replacement Ground Truth JSONL"),
+    media_archive_file: Optional[UploadFile] = File(None, description="Replacement or new Media Archive (zip)"),
 ):
     """
-    Update an existing challenge with optional ground truth file upload.
-    
-    If ground_truth_file is provided, it will replace the existing ground truth file.
-    Other fields are optional and will only be updated if provided.
+    Edit a Challenge (admin only). Every field is optional; a missing or
+    blank field is left unchanged. Scorer, parameter and file changes are
+    validated with the same rules as create, against the stored data for
+    whatever is not replaced, and are refused with 409 once the Challenge is
+    Locked. A Scorer or parameters equal to the stored ones are not a change;
+    an uploaded file always is. Title, description and image stay editable.
+    Any accepted change sets sync status to ``pending`` so the Sync Worker
+    re-publishes the repo.
     """
-    try:
-        logging.info(f"Updating challenge: {challenge_id}")
-        
-        # Find existing challenge
-        challenge = db.query(Challenge).filter(Challenge.id == challenge_id).first()
-        if not challenge:
-            raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
-        
-        # Convert empty strings to None for all optional fields to preserve existing data
-        if title == "":
-            title = None
-        if category_id == "":
-            category_id = None
-        elif category_id is not None:
-            try:
-                category_id = UUID(category_id)  # Convert string to UUID
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid UUID format for category_id")
-        if image_uri == "":
-            image_uri = None
-        if description == "":
-            description = None
-        if status == "":
-            status = None
-        
-        # Update basic fields if provided
-        if title is not None:
-            challenge.title = title
-        if category_id is not None:
-            challenge.category_id = category_id
-        if image_uri is not None:
-            challenge.image_uri = image_uri
-        if description is not None:
-            challenge.description = description
-        if status is not None:
-            challenge.status = status
-        
-        # Handle ground truth file upload if provided
-        if ground_truth_file and ground_truth_file.filename:
-            logging.info(f"Processing new ground truth file: {ground_truth_file.filename}")
-            
-            # Use CRUD function to handle all file processing
-            success, message, s3_url = await process_ground_truth_file(
-                file=ground_truth_file,
-                challenge_id=challenge_id,
-                challenge_title=challenge.title
-            )
-            
-            if not success:
-                raise HTTPException(
-                    status_code=400,
-                    detail=message
-                )
-            
-            # Update challenge with new ground truth URL
-            challenge.ground_truth = s3_url
-            logging.info(f"Ground truth updated successfully: {s3_url}")
-        
-        # Commit changes
-        db.commit()
-        db.refresh(challenge)
-        
-        logging.info(f"Challenge updated successfully: {challenge_id}")
+    challenge = _live_challenge_or_404(db, challenge_id)
+
+    requested_changes = {
+        name: value
+        for name, value in {
+            "title": (title or "").strip() or None,
+            "category_id": category_id or None,
+            "image_uri": image_uri or None,
+            "description": description or None,
+            "status": challenge_status or None,
+            SCORER_NAME_FIELD: scorer_name or None,
+            SCORER_PARAMS_FIELD: scorer_params or None,
+            INPUTS_FIELD: inputs_file,
+            GROUND_TRUTH_FIELD: ground_truth_file,
+            MEDIA_ARCHIVE_FIELD: media_archive_file,
+        }.items()
+        if value is not None
+    }
+    _drop_unchanged_scorer(challenge, requested_changes)
+    if not requested_changes:
         return challenge
-        
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        logging.error(f"Unexpected error updating challenge {challenge_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+    data_edits = [name for name in DATA_FIELDS if name in requested_changes]
+    if data_edits and challenge.locked_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"The Challenge is Locked (its first Submission arrived at {challenge.locked_at.isoformat()}), "
+                f"so {', '.join(data_edits)} can no longer change. Title, description and image can still be edited."
+            ),
+        )
+
+    errors: List[ChallengeDataError] = []
+    if "category_id" in requested_changes:
+        requested_changes["category_id"] = _existing_category_id(db, requested_changes["category_id"], errors)
+    validated = None
+    if data_edits:
+        try:
+            validated = _validate_edit(challenge, requested_changes, storage, max_media_archive_bytes)
+        except InvalidChallengeData as exc:
+            errors.extend(exc.errors)
+    if errors:
+        return _invalid(errors)
+
+    if "title" in requested_changes:
+        _refuse_taken_title(db, requested_changes["title"], challenge.id)
+
+    # Replacements go under new keys and the row points at them only once
+    # committed, so a failed edit never leaves new files with an old Scorer.
+    # The replaced objects are deleted after the commit.
+    keys = _store_uploads(storage, challenge.id, {
+        stored.field: requested_changes[stored.field].file
+        for stored in STORED_FILES
+        if stored.field in requested_changes
+    })
+    replaced = [getattr(challenge, column) for column in keys if getattr(challenge, column)]
+    for column, key in keys.items():
+        setattr(challenge, column, key)
+
+    for name in ("title", "category_id", "image_uri", "description", "status"):
+        if name in requested_changes:
+            setattr(challenge, name, requested_changes[name])
+    if validated is not None:
+        challenge.apply_scorer(validated)
+    # New content, so a fresh round of sync attempts.
+    challenge.queue_sync()
+    _commit_or_discard(db, storage, keys.values(), requested_changes.get("title"))
+    _delete_quietly(storage, replaced)
+    db.refresh(challenge)
+    return challenge
+
+
+def _drop_unchanged_scorer(challenge: Challenge, requested_changes: dict) -> None:
+    """A Scorer or parameters equal to the stored ones are not a change: a form
+    may resend them with a new title, even after the Lock. Parameters are
+    compared with their defaults filled in. Uploaded files always count."""
+    if requested_changes.get(SCORER_NAME_FIELD) == challenge.scorer_name:
+        del requested_changes[SCORER_NAME_FIELD]
+    if (
+        SCORER_NAME_FIELD not in requested_changes
+        and SCORER_PARAMS_FIELD in requested_changes
+        and _same_params(challenge, requested_changes[SCORER_PARAMS_FIELD])
+    ):
+        del requested_changes[SCORER_PARAMS_FIELD]
+
+
+def _same_params(challenge: Challenge, raw: str) -> bool:
+    try:
+        params = json.loads(raw)
+        if not isinstance(params, dict):
+            return False
+        return scorer_catalogue.validate_params(challenge.scorer_name, params) == challenge.scorer_params
+    except (ValueError, TypeError, scorer_catalogue.ScorerError):
+        return False
+
+
+def _existing_category_id(db: Session, value, errors: List[ChallengeDataError]) -> Optional[UUID]:
+    """The category id (a UUID or its text), or None after recording in
+    ``errors`` why it names no category."""
+    try:
+        category_id = value if isinstance(value, UUID) else UUID(value)
+    except ValueError:
+        errors.append(ChallengeDataError("category_id", f"{value!r} is not a UUID"))
+        return None
+    if db.get(models.Category, category_id) is None:
+        errors.append(ChallengeDataError("category_id", f"no category with id {category_id}"))
+    return category_id
+
+
+def _validate_edit(
+    challenge: Challenge, requested_changes: dict, storage: ObjectStorage, max_media_archive_bytes: int
+):
+    """Validate the Challenge as it would be after the edit: the sent files and
+    Scorer settings, and the stored ones for whatever was not sent."""
+    new_scorer_name = requested_changes.get(SCORER_NAME_FIELD, challenge.scorer_name)
+    if SCORER_PARAMS_FIELD in requested_changes:
+        params = requested_changes[SCORER_PARAMS_FIELD]
+    elif new_scorer_name == challenge.scorer_name:
+        params = challenge.scorer_params
+    else:
+        params = None  # another Scorer: its defaults, not the old Scorer's parameters
+
+    def file_or_stored(field: str, key: str) -> bytes:
+        if field in requested_changes:
+            return requested_changes[field].file.read()
+        return storage.get(key)
+
+    if MEDIA_ARCHIVE_FIELD in requested_changes:
+        media_archive = requested_changes[MEDIA_ARCHIVE_FIELD].file
+    elif challenge.media_archive_key:
+        # The port has no streaming read, so the stored archive is held in memory.
+        media_archive = io.BytesIO(storage.get(challenge.media_archive_key))
+    else:
+        media_archive = None
+
+    return validate_challenge_data(
+        inputs=file_or_stored(INPUTS_FIELD, challenge.inputs_key),
+        ground_truth=file_or_stored(GROUND_TRUTH_FIELD, challenge.ground_truth_key),
+        scorer_name=new_scorer_name,
+        scorer_params=params,
+        media_archive=media_archive,
+        max_media_archive_bytes=max_media_archive_bytes,
+    )
+
+
+def _put(storage: ObjectStorage, key: str, body, content_type: str) -> None:
+    body.seek(0)
+    storage.put(key, body, content_type=content_type)
+
+
+# for resyncing a challenge
+
+@router.post(
+    "/resync/{challenge_id}",
+    response_model=ChallengeAdminRead,
+    status_code=status.HTTP_200_OK,
+    summary="Resync a challenge's repo",
+    responses={403: {"description": "The signed-in user is not an admin."}},
+)
+def resync_challenge(
+    db: db_dependency,
+    current_user: User = Depends(require_admin),
+    challenge_id: UUID = Path(..., description="This is the ID of the challenge to resync"),
+):
+    """
+    Resync a Challenge (admin only): reset its sync attempts and set its sync
+    status to ``pending``. The Sync Worker then rebuilds the repo entirely from
+    the arena's data, creating it if it is missing and replacing every file,
+    so edits made directly on GitHub are overwritten. Typically used after a
+    sync ``failed`` once its cause (``last_sync_error``) is fixed. On a
+    deleted Challenge it retries archiving the repo instead.
+    """
+    challenge = _challenge_or_404(db, challenge_id)
+    challenge.queue_sync()
+    db.commit()
+    db.refresh(challenge)
+    return challenge
+
 
 # for deleting a challenge
 
-@router.delete("/remove/{challenge_id}", status_code=status.HTTP_200_OK)
-async def delete_challenge(
-    db: db_dependency, 
-    current_user: User = Depends(get_current_active_user),
-    challenge_id: UUID = Path(..., description="This is the ID of the challenge to delete")
+@router.delete(
+    "/remove/{challenge_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete a challenge",
+    responses={403: {"description": "The signed-in user is not an admin."}},
+)
+def delete_challenge(
+    db: db_dependency,
+    current_user: User = Depends(require_admin),
+    challenge_id: UUID = Path(..., description="This is the ID of the challenge to delete"),
 ):
     """
-    Delete a challenge by ID and return confirmation.
-    
-    Authorization rules:
-    - Admin users can delete any challenge
-    - Non-admin users can only delete challenges they created
-    
-    Returns a confirmation message with details about the deleted challenge.
+    Delete a Challenge (admin only). It disappears from the arena at once and
+    the Sync Worker archives its repo, which stays on GitHub read-only. The row
+    is kept as a tombstone, so the repo name is never reused.
     """
-    try:
-        logging.info(f"Attempting to delete challenge: {challenge_id}")
-        
-        challenge = db.query(Challenge).filter(Challenge.id == challenge_id).first()
-        if not challenge:
-            logging.warning(f"Challenge not found for deletion: {challenge_id}")
-            raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
-        
-        # Check authorization: admin can delete any challenge, non-admin can only delete their own
-        if current_user.role != 'admin' and challenge.created_by != current_user.id:
-            logging.warning(f"User {current_user.id} attempted to delete challenge {challenge_id} owned by {challenge.created_by}")
-            raise HTTPException(status_code=403, detail="You can only delete challenges you created")
-        
-        # Check if there are submissions referencing this challenge
-        related_submissions = db.query(models.Submission).filter(models.Submission.challenge_id == challenge_id).all()
-        if related_submissions:
-            submission_count = len(related_submissions)
-            logging.warning(f"Cannot delete challenge {challenge_id}: {submission_count} submissions reference it")
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Cannot delete challenge. There are {submission_count} submission(s) that reference this challenge. Please delete all related submissions first."
-            )
-        
-        challenge_title = challenge.title
-        challenge_created_at = challenge.created_at
-        
-        db.delete(challenge)
-        db.commit()
-        
-        logging.info(f"Challenge deleted successfully: {challenge_id} - {challenge_title}")
-        
-        return {
-            "message": "Challenge deleted successfully",
-            "deleted_challenge": {
-                "id": str(challenge_id),
-                "title": challenge_title,
-                "created_at": challenge_created_at.isoformat(),
-                "deleted_at": datetime.now().isoformat()
-            },
-            "status": "success"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logging.error(f"Unexpected error deleting challenge {challenge_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    challenge = _live_challenge_or_404(db, challenge_id)
+    deleted_at = utc_now()
+    challenge.deleted_at = deleted_at
+    challenge.queue_sync()
+    db.commit()
+    logging.info("Challenge %s (%s) deleted; its repo will be archived", challenge.id, challenge.repo_name)
+    return {
+        "message": "Challenge deleted; its repo will be archived",
+        "deleted_challenge": {
+            "id": str(challenge.id),
+            "title": challenge.title,
+            "repo_name": challenge.repo_name,
+            "created_at": challenge.created_at.isoformat(),
+            "deleted_at": deleted_at.isoformat(),
+        },
+        "status": "success",
+    }

@@ -543,6 +543,25 @@ psql -U username arena_db < backup_20250101.sql
 
 ## 🧪 Testing
 
+### Automated tests
+
+The pytest suite in `tests/` calls the API through FastAPI's test client against a
+real Postgres database. `TEST_DATABASE_URL` must point at a disposable database whose
+name contains `test`: the suite drops and recreates its `public` schema from the models
+and empties every table after each test. Object storage and the challenge repo host are
+replaced by the in-memory fakes in `ports/`.
+
+```bash
+pip install -r requirements-dev.txt
+createdb arena_test_01   # once
+TEST_DATABASE_URL=postgresql://user:password@localhost:5432/arena_test_01 python -m pytest
+```
+
+Fixtures (see `tests/conftest.py`): `client`, `db`, `storage`, `repo_host`, `make_user`,
+`headers_for`, `admin_headers`, `user_headers`.
+
+### Manual testing
+
 Run the application in development mode and test endpoints:
 
 ```bash

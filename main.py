@@ -8,6 +8,7 @@ from fastapi import Request
 from database import create_table
 from submission_cache import start_cache_cleanup
 from submission_worker import start_submission_workers
+from sync_worker import start_sync_worker
 import uvicorn
 
 from dotenv import load_dotenv
@@ -31,7 +32,8 @@ from routers import (
     template_v2, 
     translate_v2, 
     arena_ranking,
-    text_category
+    text_category,
+    scorer,
 )
 
 # Templates setup
@@ -65,6 +67,7 @@ async def startup_event():
     """Initialize submission processing system when FastAPI starts"""
     start_cache_cleanup()  # Start cache cleanup task
     start_submission_workers()  # Start worker threads
+    start_sync_worker()  # Publish pending Challenges to their repos
     
 
 def custom_openapi():
@@ -184,6 +187,7 @@ app.include_router(template_v2.router)
 app.include_router(translate_v2.router)
 app.include_router(arena_ranking.router)
 app.include_router(text_category.router)
+app.include_router(scorer.router)
 
 
 if __name__ == "__main__":

@@ -200,15 +200,20 @@ get_current_active_user = authenticate
 
 
 def require_role(required_roles: list[str]):
-    """Decorator to require specific user roles."""
+    """A dependency that returns the signed-in user, or answers 403 when the
+    user's role is not one of ``required_roles``. Roles are plain strings."""
     def role_checker(current_user: User = Depends(authenticate)) -> User:
         if current_user.role not in required_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Access denied. Required roles: {[role.value for role in required_roles]}, your role: {current_user.role.value}"
+                detail=f"Not allowed: this action requires the {' or '.join(required_roles)} role.",
             )
         return current_user
     return role_checker
+
+
+# Admin means the user's role is "admin". Use as ``Depends(require_admin)``.
+require_admin = require_role(["admin"])
 
 
 

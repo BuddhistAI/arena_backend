@@ -181,63 +181,17 @@ async def evaluate(challenge_data_url: str, submission_data_url: str, evaluator_
 
 async def trigger_automatic_evaluation(db: Session, submission_instance: models.Submission) -> bool:
     """
-    Trigger automatic evaluation for a submission and save results to database.
-    
-    Args:
-        db: Database session
-        submission_instance: The submission instance to evaluate
-        
-    Returns:
-        True if evaluation succeeded, False otherwise
+    Legacy CER/WER scoring against a Challenge's ground-truth URL.
+
+    Challenges no longer carry that URL: their Ground Truth is a private
+    storage key scored through a Scorer. Scoring Submissions comes back with
+    RFC 2 (Challenge Submissions); until then this reports failure.
     """
-    try:
-        logger.info(f"Starting automatic evaluation for submission {submission_instance.id}")
-        
-        # Get challenge instance to fetch ground truth URL
-        challenge_instance = db.query(models.Challenge).filter(
-            models.Challenge.id == submission_instance.challenge_id
-        ).first()
-        
-        if not challenge_instance:
-            logger.error(f"Challenge not found for submission {submission_instance.id}")
-            return False
-        
-        if not challenge_instance.ground_truth:
-            logger.error(f"No ground truth URL found for challenge {challenge_instance.id}")
-            return False
-        
-        if not submission_instance.dataset_url:
-            logger.error(f"No dataset URL found for submission {submission_instance.id}")
-            return False
-        
-        # Run evaluation
-        evaluation_results = await evaluate(
-            challenge_instance.ground_truth,
-            submission_instance.dataset_url
-        )
-        
-        if evaluation_results is None:
-            logger.error(f"Evaluation failed for submission {submission_instance.id}")
-            return False
-        
-        # Save results to database
-        success = await save_evaluation_results(
-            db, 
-            submission_instance.user_id,
-            submission_instance.id,
-            evaluation_results
-        )
-        
-        if success:
-            logger.info(f"Automatic evaluation completed successfully for submission {submission_instance.id}")
-        else:
-            logger.error(f"Failed to save evaluation results for submission {submission_instance.id}")
-        
-        return success
-        
-    except Exception as e:
-        logger.error(f"Error in trigger_automatic_evaluation: {str(e)}")
-        return False
+    logger.error(
+        f"Cannot score submission {submission_instance.id}: "
+        "scoring Submissions is not supported until RFC 2 (Challenge Submissions)."
+    )
+    return False
 
 async def save_evaluation_results(db: Session, user_id: str, submission_id: str, results: Dict[str, float]) -> bool:
     """
