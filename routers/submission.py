@@ -14,6 +14,7 @@ from schemas.submission import (
 from ports.clock import Clock, get_clock
 from ports.object_storage import ObjectStorage, get_object_storage
 from service.daily_limit import DailyLimitReached
+from service.submission_deletion import delete_submission as delete_submission_and_files
 from service.submission_intake import SubmissionForm, SubmissionIntake, SubmissionRejected
 from submission_worker import SubmissionQueue, get_queue_stats, get_submission_queue
 from submission_cache import get_cache_stats
@@ -31,14 +32,24 @@ router = APIRouter(prefix="/submissions", tags=["submissions"])
 
 db_dependency = Annotated[Session, Depends(get_db)]
 
+
+def _live_submissions(db: Session):
+    """Submissions that were not deleted: a deleted Submission is gone from
+    the API (see ``Submission.deleted_at``)."""
+    return db.query(models.Submission).filter(models.Submission.deleted_at.is_(None))
+
+
+def _live_submission_or_404(db: Session, submission_id: uuid.UUID) -> models.Submission:
+    submission = _live_submissions(db).filter(models.Submission.id == submission_id).one_or_none()
+    if submission is None:
+        raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
+    return submission
+
 # ******** basic endpoints ********
 @router.get("", response_model=List[SubmissionRead])
 async def list_all_submissions(db: db_dependency):
     """List all submissions (admin only - for now open to all)."""
-    try:
-        return db.query(models.Submission).all()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return _live_submissions(db).all()
 
 @router.get("/my", response_model=List[SubmissionRead])
 async def list_my_submissions(
@@ -46,21 +57,19 @@ async def list_my_submissions(
     current_user: User = Depends(get_current_active_user)
 ):
     """List submissions created by the current authenticated user."""
-    try:
-        return db.query(models.Submission).filter(models.Submission.user_id == current_user.id).all()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return _live_submissions(db).filter(models.Submission.user_id == current_user.id).all()
 
 @router.get("/preferred-models", response_model=List[str])
 def list_preferred_models(db: db_dependency) -> List[str]:
     """List the Preferred Model ids already used, for the form's autocomplete.
 
     Returns:
-        Each distinct Preferred Model id on any Challenge's Submissions, sorted.
+        Each distinct Preferred Model id on any Challenge's Submissions that
+        were not deleted, sorted.
     """
     rows = (
         db.query(models.Submission.preferred_model)
-        .filter(models.Submission.preferred_model.isnot(None))
+        .filter(models.Submission.preferred_model.isnot(None), models.Submission.deleted_at.is_(None))
         .distinct()
         .order_by(models.Submission.preferred_model)
         .all()
@@ -69,10 +78,7 @@ def list_preferred_models(db: db_dependency) -> List[str]:
 
 @router.get("/{submission_id}", response_model=SubmissionRead)
 async def get_submission(db: db_dependency, submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION)):
-    submission = db.query(models.Submission).filter(models.Submission.id == submission_id).first()
-    if not submission:
-        raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
-    return submission
+    return _live_submission_or_404(db, submission_id)
 
 @router.get("/{submission_id}/status", response_model=SubmissionStatusResponse)
 async def get_submission_status(
@@ -88,10 +94,7 @@ async def get_submission_status(
     - completed: scored; ``headline_metric`` and ``score_details`` are set
     - failed: ``status_message`` says why
     """
-    submission = db.query(models.Submission).filter(models.Submission.id == submission_id).first()
-    if not submission:
-        raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
-    return submission
+    return _live_submission_or_404(db, submission_id)
 
 
 
@@ -115,9 +118,7 @@ def resync_submission(
     Submission's folder included, from the database and object storage.
     Typically used once a sync ``failed``.
     """
-    submission = db.get(models.Submission, submission_id)
-    if submission is None:
-        raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
+    submission = _live_submission_or_404(db, submission_id)
     if submission.status != SubmissionStatus.COMPLETED:
         raise HTTPException(status_code=409, detail="Only scored Submissions are published to the Challenge Repo")
     submission.queue_sync()
@@ -127,44 +128,31 @@ def resync_submission(
     return submission
 
 
-@router.delete("/{submission_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_submission(
-    db: db_dependency, 
+@router.delete(
+    "/{submission_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a submission (submitter or admin)",
+    responses={
+        403: {"description": "The signed-in user neither made the Submission nor is an admin."},
+        404: {"description": "No Submission has that id, or it was already deleted."},
+    },
+)
+def delete_submission(
+    db: db_dependency,
     current_user: User = Depends(get_current_active_user),
-    submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION)
-):
+    storage: ObjectStorage = Depends(get_object_storage),
+    clock: Clock = Depends(get_clock),
+    submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION),
+) -> None:
     """
-    Delete a submission from the leaderboard.
-    
-    Authorization rules:
-    - Admin users can delete any submission
-    - Non-admin users can only delete their own submissions
+    Delete a Submission (its submitter or an admin). Submissions cannot be
+    edited, so this is how one is corrected: delete it and submit again.
+    It still counts toward that day's limit, and its Challenge stays Locked.
     """
-    try:
-        submission = db.query(models.Submission).filter(models.Submission.id == submission_id).first()
-        if not submission:
-            raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
-        
-        # Check authorization: admin can delete any submission, non-admin can only delete their own
-        if current_user.role != 'admin' and submission.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="You can only delete your own submissions")
-        
-        # Database CASCADE will automatically delete related results
-        db.delete(submission)
-        db.commit()
-        
-        return {"message": "Submission and related records deleted successfully"}
-    
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        raise
-    except Exception as e:
-        db.rollback()
-        # Return detailed error information
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to delete submission {submission_id}: {str(e)}"
-        )
+    submission = _live_submission_or_404(db, submission_id)
+    if current_user.role != "admin" and submission.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You can only delete your own submissions")
+    delete_submission_and_files(db, storage, submission, at=clock())
 
 # ******** basic endpoints ********
 

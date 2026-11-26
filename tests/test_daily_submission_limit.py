@@ -48,6 +48,20 @@ def test_the_eleventh_submission_in_a_day_is_refused_with_the_reset_time(
     assert response.headers["Retry-After"] == str(14 * 3600 + 30 * 60)
 
 
+def test_deleting_submissions_does_not_free_a_slot(client, headers_for, participant, challenge):
+    """After 10 Submissions in a day, deleting all of them still leaves the
+    next one refused with 429."""
+    headers = headers_for(participant)
+    submit_times(client, headers, challenge, LIMIT)
+    for submission in my_submissions(client, headers):
+        response = client.delete(f"/submissions/{submission['id']}", headers=headers)
+        assert response.status_code == 204, response.text
+
+    response = submit(client, headers, challenge)
+
+    assert response.status_code == 429, response.text
+
+
 def test_a_limited_submission_stores_nothing(client, headers_for, participant, challenge, storage):
     """A Submission refused by the limit stores no object and no Submission."""
     headers = headers_for(participant)

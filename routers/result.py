@@ -31,6 +31,16 @@ def _refuse_deleted_challenge(db: Session, challenge_id: uuid.UUID) -> None:
         raise HTTPException(status_code=404, detail="Challenge not found")
 
 
+def _live_submission(db: Session, submission_id: uuid.UUID):
+    """The Submission, or None when it does not exist or was deleted: a
+    deleted Submission's results are off the leaderboard."""
+    return (
+        db.query(Submission)
+        .filter(Submission.id == submission_id, Submission.deleted_at.is_(None))
+        .first()
+    )
+
+
 @router.get("/challenge/{challenge_id}", response_model=List[ResultReadNested], status_code=status.HTTP_200_OK)
 async def get_results_by_challenge(
     db: db_dependency,
@@ -39,7 +49,11 @@ async def get_results_by_challenge(
     """Get all results for a specific challenge"""
     _refuse_deleted_challenge(db, challenge_id)
     # Get all submissions for the challenge
-    submissions = db.query(Submission).filter(Submission.challenge_id == challenge_id).all()
+    submissions = (
+        db.query(Submission)
+        .filter(Submission.challenge_id == challenge_id, Submission.deleted_at.is_(None))
+        .all()
+    )
     
     if not submissions:
         return []
@@ -52,7 +66,7 @@ async def get_results_by_challenge(
     
     nested_results = []
     for result in results:
-        submission = db.query(Submission).filter(Submission.id == result.submission_id).first()
+        submission = _live_submission(db, result.submission_id)
         if not submission:
             continue
         model = db.query(Model).filter(Model.id == submission.model_id).first()
@@ -103,7 +117,7 @@ async def list_all_results(db: db_dependency):
         
         nested_results = []
         for result in results:
-            submission = db.query(Submission).filter(Submission.id == result.submission_id).first()
+            submission = _live_submission(db, result.submission_id)
             if not submission:
                 continue
             model = db.query(Model).filter(Model.id == submission.model_id).first()
@@ -154,7 +168,7 @@ async def list_results_with_challenge_id(db: db_dependency):
         
         results_with_challenge = []
         for result in results:
-            submission = db.query(Submission).filter(Submission.id == result.submission_id).first()
+            submission = _live_submission(db, result.submission_id)
             if not submission:
                 continue
                 

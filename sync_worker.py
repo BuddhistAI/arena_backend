@@ -19,7 +19,9 @@ Challenge, and every attempt publishes the folder of each scored Submission
 ``synced`` with its ``repo_path``; when the Challenge's attempts run out, the
 scored Submissions still ``pending`` become ``failed`` until a Resync. A
 Submission whose Artifact is missing from storage is left out of the tree and
-marked ``failed`` at once, without failing its Challenge's sync.
+marked ``failed`` at once, without failing its Challenge's sync. A deleted
+Submission is left out of the tree, so the attempt its deletion queues
+removes its folder; its own sync state is left as it was.
 
 Sync is one way: nothing is read back from the repo host. Each attempt
 creates the repo from the template if it is missing and replaces the repo's
@@ -157,11 +159,13 @@ class SyncWorker:
             logger.info("%s Challenge %s (%s)", action, challenge.id, challenge.repo_name)
 
     def _fail_waiting_submissions(self, challenge: Challenge) -> None:
-        """Mark ``failed`` every scored Submission still waiting to be published."""
+        """Mark ``failed`` every scored, not deleted Submission still waiting
+        to be published."""
         waiting = object_session(challenge).query(Submission).filter(
             Submission.challenge_id == challenge.id,
             Submission.status == SubmissionStatus.COMPLETED,
             Submission.sync_status == SyncStatus.PENDING,
+            Submission.deleted_at.is_(None),
         )
         for submission in waiting:
             submission.record_failed_sync()
@@ -189,14 +193,18 @@ class SyncWorker:
         return submissions
 
     def _published_submissions(self, challenge: Challenge) -> List[Tuple[Submission, PublishedSubmission]]:
-        """The Challenge's scored Submissions of a publishable type, oldest
-        first, each with its folder. A Submission whose Artifact is missing
+        """The Challenge's scored, not deleted Submissions of a publishable
+        type, oldest first, each with its folder. A Submission whose Artifact is missing
         from storage is left out and marked ``failed``; the others publish."""
         rows = (
             object_session(challenge)
             .query(Submission, User.username)
             .join(User, User.id == Submission.user_id)
-            .filter(Submission.challenge_id == challenge.id, Submission.status == SubmissionStatus.COMPLETED)
+            .filter(
+                Submission.challenge_id == challenge.id,
+                Submission.status == SubmissionStatus.COMPLETED,
+                Submission.deleted_at.is_(None),
+            )
             .order_by(Submission.created_at, Submission.id)
             .all()
         )

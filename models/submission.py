@@ -58,6 +58,9 @@ class Submission(Base):
     sync_status = Column(
         String, nullable=False, default=SyncStatus.PENDING.value, server_default=SyncStatus.PENDING.value
     )
+    # Set when the submitter or an admin deletes it. The row stays so the
+    # daily limit still counts it; a deleted Submission is gone from the API.
+    deleted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     updated_at = Column(DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
 

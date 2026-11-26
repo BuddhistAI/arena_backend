@@ -150,6 +150,9 @@ class SubmissionWorker:
         if submission is None:
             logger.error("Worker %s: Submission %s not found", self.worker_id, submission_id)
             return
+        if submission.deleted_at is not None:
+            logger.info("Worker %s: Submission %s was deleted before scoring", self.worker_id, submission_id)
+            return
         submission.status = SubmissionStatus.PROCESSING
         submission.status_message = "Scoring..."
         db.commit()
