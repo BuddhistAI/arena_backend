@@ -13,6 +13,16 @@ Sync state lives on the Challenge row, so pending work survives a restart:
 A deleted Challenge (``deleted_at`` set) is queued the same way; its attempt
 archives the repo instead of publishing it.
 
+Submissions ride on their Challenge's sync: scoring a Submission queues its
+Challenge, and every attempt publishes the folder of each scored Submission
+(``service.submission_publisher``). A successful attempt marks each of them
+``synced`` with its ``repo_path``; when the Challenge's attempts run out, the
+scored Submissions still ``pending`` become ``failed`` until a Resync. A
+Submission whose Artifact is missing from storage is left out of the tree and
+marked ``failed`` at once, without failing its Challenge's sync. A deleted
+Submission is left out of the tree, so the attempt its deletion queues
+removes its folder; its own sync state is left as it was.
+
 Sync is one way: nothing is read back from the repo host. Each attempt
 creates the repo from the template if it is missing and replaces the repo's
 whole tree with the publisher's file set in one commit, so a retry or a
@@ -25,14 +35,18 @@ Tests call ``drain``, which retries without waiting until nothing is pending.
 import logging
 import threading
 from datetime import datetime, timedelta
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
-from models.challenge import Challenge, SyncStatus, utc_now
-from ports.object_storage import ObjectStorage
+from models.challenge import Challenge, SyncStatus
+from models.submission import Submission, SubmissionStatus
+from models.user import User
+from ports.clock import Clock, utc_now
+from ports.object_storage import ObjectNotFound, ObjectStorage
 from ports.repo_host import RepoAlreadyExists, RepoHost, RepoNotFound
 from service.challenge_publisher import MAX_COMMITTED_INPUTS_BYTES, challenge_files
+from service.submission_publisher import PublishedSubmission, submission_files
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +65,7 @@ class SyncWorker:
         repo_host: RepoHost,
         max_committed_inputs_bytes: int = MAX_COMMITTED_INPUTS_BYTES,
         backoff: timedelta = DEFAULT_BACKOFF,
-        clock: Callable[[], datetime] = utc_now,
+        clock: Clock = utc_now,
     ) -> None:
         self.session_factory = session_factory
         self.storage = storage
@@ -128,9 +142,12 @@ class SyncWorker:
             if challenge.deleted_at is not None:
                 self._archive(challenge)
             else:
-                self._publish(challenge)
+                for submission, published in self._publish(challenge):
+                    submission.mark_synced(published.folder)
         except Exception as exc:
             challenge.record_failed_sync(_describe(exc), at=self.clock(), max_attempts=MAX_ATTEMPTS)
+            if challenge.sync_status == SyncStatus.FAILED:
+                self._fail_waiting_submissions(challenge)
             logger.warning(
                 "Sync of Challenge %s (%s) failed, attempt %d of %d: %s",
                 challenge.id, challenge.repo_name, challenge.sync_attempts, MAX_ATTEMPTS,
@@ -141,21 +158,72 @@ class SyncWorker:
             action = "Archived the repo of" if challenge.deleted_at is not None else "Synced"
             logger.info("%s Challenge %s (%s)", action, challenge.id, challenge.repo_name)
 
+    def _fail_waiting_submissions(self, challenge: Challenge) -> None:
+        """Mark ``failed`` every scored, not deleted Submission still waiting
+        to be published."""
+        waiting = object_session(challenge).query(Submission).filter(
+            Submission.challenge_id == challenge.id,
+            Submission.status == SubmissionStatus.COMPLETED,
+            Submission.sync_status == SyncStatus.PENDING,
+            Submission.is_live,
+        )
+        for submission in waiting:
+            submission.record_failed_sync()
+
     def _archive(self, challenge: Challenge) -> None:
         try:
             self.repo_host.archive_repo(challenge.repo_name)
         except RepoNotFound:
             pass  # never published, so there is nothing to archive
 
-    def _publish(self, challenge: Challenge) -> None:
+    def _publish(self, challenge: Challenge) -> List[Tuple[Submission, PublishedSubmission]]:
+        """Replace the repo's tree with the Challenge's files and every scored
+        Submission's folder. Returns the Submissions it published."""
         files = challenge_files(
             challenge, self.storage, max_committed_inputs_bytes=self.max_committed_inputs_bytes
         )
+        submissions = self._published_submissions(challenge)
+        for _, published in submissions:
+            files.update(published.files)
         try:
             self.repo_host.create_repo_from_template(challenge.repo_name, challenge.title)
         except RepoAlreadyExists:
             pass
         self.repo_host.replace_files(challenge.repo_name, files, COMMIT_MESSAGE)
+        return submissions
+
+    def _published_submissions(self, challenge: Challenge) -> List[Tuple[Submission, PublishedSubmission]]:
+        """The Challenge's scored, not deleted Submissions, oldest first, each
+        with its folder. A Submission whose Artifact is missing from storage
+        is left out and marked ``failed``; the others publish."""
+        rows = (
+            object_session(challenge)
+            .query(Submission, User.username)
+            .join(User, User.id == Submission.user_id)
+            .filter(
+                Submission.challenge_id == challenge.id,
+                Submission.status == SubmissionStatus.COMPLETED,
+                Submission.is_live,
+            )
+            .order_by(Submission.created_at, Submission.id)
+            .all()
+        )
+        published = []
+        for submission, username in rows:
+            try:
+                files = submission_files(
+                    submission,
+                    submitter=username,
+                    scorer_name=challenge.scorer_name,
+                    storage=self.storage,
+                    taken_folders={folder.folder for _, folder in published},
+                )
+            except ObjectNotFound as exc:
+                submission.record_failed_sync()
+                logger.warning("Submission %s left out of the sync: Artifact %s is missing", submission.id, exc)
+                continue
+            published.append((submission, files))
+        return published
 
 
 def _describe(exc: Exception) -> str:

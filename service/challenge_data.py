@@ -14,7 +14,7 @@ the Media Archive; the archive is a zip of at most 2 GB.
 
 It returns the ``ValidScorer`` the data was checked against, ready to store
 on the Challenge (``Challenge.apply_scorer``), or raises ``InvalidChallengeData``
-whose ``errors`` list every problem found (each a ``ChallengeDataError`` naming
+whose ``errors`` list every problem found (each a ``FormError`` naming
 the form field, and the line or id when known). All Scorer-specific rules go
 through the Scorer catalogue; this module adds no metric logic.
 
@@ -28,11 +28,12 @@ import json
 import os
 import re
 import zipfile
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any, BinaryIO, Dict, Iterable, List, Mapping, Optional, Union
 
 from models.challenge import Direction
 from service import scorer_catalogue
+from service.form_errors import FormError, id_mismatch_errors
 
 INPUTS_FIELD = "inputs_file"
 GROUND_TRUTH_FIELD = "ground_truth_file"
@@ -49,27 +50,10 @@ MAX_MEDIA_ARCHIVE_BYTES = 2 * 1024**3
 MAX_REPORTED_ERRORS = 100
 
 
-@dataclass(frozen=True)
-class ChallengeDataError:
-    """One problem with the submitted data.
-
-    ``field`` is the multipart form field it concerns; ``line`` (1-based) and
-    ``id`` are set when the problem is tied to a row or an Input id.
-    """
-
-    field: str
-    message: str
-    line: Optional[int] = None
-    id: Optional[str] = None
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
 class InvalidChallengeData(ValueError):
     """The data cannot make a valid Challenge. ``errors`` lists every problem."""
 
-    def __init__(self, errors: List[ChallengeDataError]):
+    def __init__(self, errors: List[FormError]):
         self.errors = list(errors)
         super().__init__("; ".join(f"{e.field}: {e.message}" for e in self.errors))
 
@@ -103,7 +87,7 @@ def validate_challenge_data(
     Raises:
         InvalidChallengeData: listing every problem found.
     """
-    errors: List[ChallengeDataError] = []
+    errors: List[FormError] = []
 
     scorer = _describe_scorer(scorer_name, errors)
     params = _validate_params(scorer, scorer_params, errors)
@@ -149,14 +133,13 @@ def sample_predictions_file(scorer_name: str, input_ids: Iterable[str]) -> bytes
     ).encode("utf-8")
 
 
-def _id_mismatch_errors(exc) -> List[ChallengeDataError]:
-    return [
-        ChallengeDataError(GROUND_TRUTH_FIELD, f"Input id {i!r} has no Reference in the Ground Truth", id=i)
-        for i in exc.missing_ids
-    ] + [
-        ChallengeDataError(GROUND_TRUTH_FIELD, f"Reference id {i!r} is not in the Inputs", id=i)
-        for i in exc.extra_ids
-    ]
+def _id_mismatch_errors(exc: scorer_catalogue.IdMismatchError) -> List[FormError]:
+    return id_mismatch_errors(
+        exc,
+        GROUND_TRUTH_FIELD,
+        missing="Input id {id!r} has no Reference in the Ground Truth",
+        extra="Reference id {id!r} is not in the Inputs",
+    )
 
 
 def media_archive_size_limit() -> int:
@@ -165,13 +148,13 @@ def media_archive_size_limit() -> int:
     return MAX_MEDIA_ARCHIVE_BYTES
 
 
-def _archive_names(archive: BinaryIO, max_bytes: int, errors: List[ChallengeDataError]) -> Optional[set]:
+def _archive_names(archive: BinaryIO, max_bytes: int, errors: List[FormError]) -> Optional[set]:
     """The file names in the zip, or None after recording why it is unusable."""
     archive.seek(0, os.SEEK_END)
     size = archive.tell()
     archive.seek(0)
     if size > max_bytes:
-        errors.append(ChallengeDataError(
+        errors.append(FormError(
             MEDIA_ARCHIVE_FIELD, f"the Media Archive is {size} bytes, larger than the {max_bytes}-byte limit"
         ))
         return None
@@ -179,13 +162,13 @@ def _archive_names(archive: BinaryIO, max_bytes: int, errors: List[ChallengeData
         with zipfile.ZipFile(archive) as opened:
             return {name for name in opened.namelist() if not name.endswith("/")}
     except zipfile.BadZipFile:
-        errors.append(ChallengeDataError(MEDIA_ARCHIVE_FIELD, "the Media Archive is not a valid zip file"))
+        errors.append(FormError(MEDIA_ARCHIVE_FIELD, "the Media Archive is not a valid zip file"))
         return None
     finally:
         archive.seek(0)
 
 
-def _check_media(inputs: bytes, archive, max_bytes: int, errors: List[ChallengeDataError]) -> None:
+def _check_media(inputs: bytes, archive, max_bytes: int, errors: List[FormError]) -> None:
     """Every Input's ``media`` path must be a file in the Media Archive."""
     names = _archive_names(archive, max_bytes, errors) if archive is not None else None
     if archive is not None and names is None:
@@ -194,20 +177,20 @@ def _check_media(inputs: bytes, archive, max_bytes: int, errors: List[ChallengeD
     missing = [(i, path) for i, path in media_paths.items() if names is None or path not in names]
     for row_id, path in missing[:MAX_REPORTED_ERRORS]:
         where = "the Media Archive" if archive is not None else "a Media Archive (none was uploaded)"
-        errors.append(ChallengeDataError(
+        errors.append(FormError(
             INPUTS_FIELD, f"Input {row_id!r} refers to media {path!r}, which is not in {where}", id=row_id
         ))
 
 
-def _row_error(exc, row_id: Optional[str] = None) -> ChallengeDataError:
+def _row_error(exc, row_id: Optional[str] = None) -> FormError:
     form_field = INPUTS_FIELD if isinstance(exc, scorer_catalogue.InvalidInputError) else GROUND_TRUTH_FIELD
-    return ChallengeDataError(form_field, str(exc), id=row_id)
+    return FormError(form_field, str(exc), id=row_id)
 
 
-def _errors_per_id(scorer_name, inputs, references, params) -> List[ChallengeDataError]:
+def _errors_per_id(scorer_name, inputs, references, params) -> List[FormError]:
     """The Scorer stops at the first bad row; check each id on its own so every
     bad Input or Reference is reported with its id (up to MAX_REPORTED_ERRORS)."""
-    errors: List[ChallengeDataError] = []
+    errors: List[FormError] = []
     for row_id, value in inputs.items():
         try:
             scorer_catalogue.validate_ground_truth(
@@ -220,31 +203,31 @@ def _errors_per_id(scorer_name, inputs, references, params) -> List[ChallengeDat
     return errors
 
 
-def _describe_scorer(name: str, errors: List[ChallengeDataError]) -> Optional[dict]:
+def _describe_scorer(name: str, errors: List[FormError]) -> Optional[dict]:
     try:
         return scorer_catalogue.describe_scorer(name)
     except scorer_catalogue.ScorerError as exc:
-        errors.append(ChallengeDataError(SCORER_NAME_FIELD, str(exc)))
+        errors.append(FormError(SCORER_NAME_FIELD, str(exc)))
         return None
 
 
-def _validate_params(scorer, raw, errors: List[ChallengeDataError]) -> Optional[dict]:
+def _validate_params(scorer, raw, errors: List[FormError]) -> Optional[dict]:
     if isinstance(raw, (str, bytes)):
         try:
             raw = json.loads(raw) if raw.strip() else {}
         except ValueError as exc:
-            errors.append(ChallengeDataError(SCORER_PARAMS_FIELD, f"not valid JSON ({exc})"))
+            errors.append(FormError(SCORER_PARAMS_FIELD, f"not valid JSON ({exc})"))
             return None
     raw = {} if raw is None else raw
     if not isinstance(raw, Mapping):
-        errors.append(ChallengeDataError(SCORER_PARAMS_FIELD, "must be a JSON object"))
+        errors.append(FormError(SCORER_PARAMS_FIELD, "must be a JSON object"))
         return None
     if scorer is None:
         return None
     try:
         return scorer_catalogue.validate_params(scorer["name"], raw)
     except scorer_catalogue.ScorerError as exc:
-        errors.append(ChallengeDataError(SCORER_PARAMS_FIELD, str(exc)))
+        errors.append(FormError(SCORER_PARAMS_FIELD, str(exc)))
         return None
 
 
@@ -252,11 +235,22 @@ def _validate_params(scorer, raw, errors: List[ChallengeDataError]) -> Optional[
 _LINE_MESSAGE = re.compile(r"\bline (\d+):")
 
 
-def _load(loader, data: bytes, form_field: str, errors: List[ChallengeDataError]):
+def line_of(exc: scorer_catalogue.ScorerError) -> Optional[int]:
+    """The line number a JSONL loader error names, if it names one.
+
+    Args:
+        exc: An error raised by one of the catalogue's JSONL loaders.
+
+    Returns:
+        The 1-based line number, or None for whole-file problems.
+    """
+    match = _LINE_MESSAGE.search(str(exc))
+    return int(match.group(1)) if match else None
+
+
+def _load(loader, data: bytes, form_field: str, errors: List[FormError]):
     try:
         return loader(data)
     except scorer_catalogue.ScorerError as exc:
-        match = _LINE_MESSAGE.search(str(exc))
-        line = int(match.group(1)) if match else None
-        errors.append(ChallengeDataError(form_field, str(exc), line=line))
+        errors.append(FormError(form_field, str(exc), line=line_of(exc)))
         return None

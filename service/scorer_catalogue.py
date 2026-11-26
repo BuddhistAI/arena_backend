@@ -25,8 +25,10 @@ from buddhist_eval import (
     IdMismatchError,
     InvalidInputError,
     InvalidParameterError,
+    InvalidPredictionError,
     InvalidReferenceError,
     MalformedJsonlError,
+    ScoreResult,
     UnknownScorerError,
 )
 
@@ -36,13 +38,17 @@ __all__ = [
     "IdMismatchError",
     "InvalidInputError",
     "InvalidParameterError",
+    "InvalidPredictionError",
     "InvalidReferenceError",
     "MalformedJsonlError",
     "UnknownScorerError",
+    "ScoreResult",
     "list_scorers",
     "describe_scorer",
     "validate_params",
     "validate_ground_truth",
+    "validate_predictions",
+    "score",
     "load_inputs",
     "load_media_paths",
     "load_ground_truth",
@@ -99,6 +105,48 @@ def validate_ground_truth(
         InvalidReferenceError: If a Reference has the wrong shape or cannot be scored.
     """
     buddhist_eval.get_scorer(name).validate_ground_truth(inputs, references, **params)
+
+
+def validate_predictions(name: str, inputs: Mapping[str, Any], predictions: Mapping[str, Any]) -> None:
+    """Check a Predictions File: exactly one Prediction per Input id, each
+    matching the Scorer's Prediction schema.
+
+    Args:
+        name: The Scorer's name.
+        inputs: The Challenge's Inputs, id -> Input (from ``load_inputs``).
+        predictions: The Predictions, id -> Prediction (from ``load_predictions``).
+
+    Raises:
+        UnknownScorerError: If no Scorer has that name.
+        IdMismatchError: If the id sets differ (``missing_ids``/``extra_ids``).
+        InvalidPredictionError: If a Prediction has the wrong shape.
+    """
+    buddhist_eval.get_scorer(name).validate_predictions(inputs, predictions)
+
+
+def score(
+    name: str,
+    inputs: Mapping[str, Any],
+    references: Mapping[str, Any],
+    predictions: Mapping[str, Any],
+    params: Mapping[str, Any],
+) -> ScoreResult:
+    """Score Predictions against the Ground Truth with the named Scorer.
+
+    Args:
+        name: The Scorer's name.
+        inputs: The Challenge's Inputs, id -> Input.
+        references: The Ground Truth, id -> Reference.
+        predictions: The Predictions, id -> Prediction.
+        params: The Scorer's parameters, as stored on the Challenge.
+
+    Returns:
+        The unrounded Headline Metric and the Scorer's details as JSON values.
+
+    Raises:
+        ScorerError: Whatever the Scorer or its metric raises, with its message.
+    """
+    return buddhist_eval.get_scorer(name).score(inputs, references, predictions, **params)
 
 
 def load_inputs(data: bytes) -> dict[str, Any]:

@@ -206,8 +206,6 @@ backend/
 │   ├── s3_utils.py            # S3 helper functions
 │   ├── upload_file_to_s3.py   # File upload logic
 │   └── ground_truth_upload_s3.py
-├── Evaluation/                 # Evaluation logic
-│   └── evaluation.py          # Automatic evaluation system
 ├── models/                     # SQLAlchemy ORM models
 │   ├── user.py                # User model
 │   ├── challenge.py           # Challenge model
@@ -249,7 +247,6 @@ backend/
 ├── redis_client.py             # Redis caching client
 ├── submission_worker.py        # Background worker for submissions
 ├── submission_cache.py         # Submission progress caching
-├── background_tasks.py         # Background task management
 ├── requirements.txt            # Python dependencies
 ├── alembic.ini                 # Alembic configuration
 ├── .env                        # Environment variables (create this)

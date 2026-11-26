@@ -1,21 +1,27 @@
-from fastapi import APIRouter, status, HTTPException, Depends, Path, Body, UploadFile, File, Form
-from typing import Annotated, List
+from fastapi import APIRouter, status, HTTPException, Depends, Path, Query, UploadFile, File, Form
+from fastapi.responses import JSONResponse
+from typing import Annotated, List, Optional, Union
 from sqlalchemy.orm import Session
 import models
-from models.user import User
-from models.submission import SubmissionStatus
+from models.user import ADMIN_ROLE, User
 from database import get_db
-from schemas.submission import SubmissionCreate, SubmissionRead, SubmissionCreatedResponse, SubmissionStatusResponse
-from CRUD.model import create_or_get_model
-from submission_worker import queue_submission_for_processing, get_queue_stats
-from submission_cache import (
-    get_submission_progress, 
-    set_submission_progress, 
-    get_cache_stats,
-    CacheStatus
+from schemas.submission import (
+    DailyLimitResponse,
+    SubmissionCreatedResponse,
+    SubmissionRead,
+    SubmissionStatusResponse,
 )
-import logging
-from auth import get_current_active_user
+from ports.clock import Clock, get_clock
+from ports.object_storage import ObjectStorage, get_object_storage
+from service.daily_limit import DailyLimitReached
+from service.submission_deletion import delete_submission as delete_submission_and_files
+from service.submission_intake import SubmissionForm, SubmissionIntake, SubmissionRejected
+from submission_worker import SubmissionQueue, get_queue_stats, get_submission_queue
+from submission_cache import get_cache_stats
+from auth import get_current_active_user, require_admin
+from models.submission import SubmissionStatus
+import datetime
+import math
 import uuid
 
 # Constants for repeated strings
@@ -26,166 +32,251 @@ router = APIRouter(prefix="/submissions", tags=["submissions"])
 
 db_dependency = Annotated[Session, Depends(get_db)]
 
+
+def _live_submission_or_404(db: Session, submission_id: uuid.UUID) -> models.Submission:
+    submission = models.Submission.live(db).filter(models.Submission.id == submission_id).one_or_none()
+    if submission is None:
+        raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
+    return submission
+
 # ******** basic endpoints ********
 @router.get("", response_model=List[SubmissionRead])
-async def list_all_submissions(db: db_dependency):
-    """List all submissions (admin only - for now open to all)."""
-    try:
-        return db.query(models.Submission).all()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+def list_all_submissions(
+    db: db_dependency,
+    current_user: User = Depends(require_admin),
+    challenge_id: Optional[uuid.UUID] = Query(None, description="Only this Challenge's Submissions"),
+) -> List[models.Submission]:
+    """List every user's Submissions (admin only), optionally of one Challenge."""
+    submissions = models.Submission.live(db)
+    if challenge_id is not None:
+        submissions = submissions.filter(models.Submission.challenge_id == challenge_id)
+    return submissions.all()
 
 @router.get("/my", response_model=List[SubmissionRead])
 async def list_my_submissions(
     db: db_dependency,
     current_user: User = Depends(get_current_active_user)
-):
+) -> List[models.Submission]:
     """List submissions created by the current authenticated user."""
-    try:
-        return db.query(models.Submission).filter(models.Submission.user_id == current_user.id).all()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return models.Submission.live(db).filter(models.Submission.user_id == current_user.id).all()
+
+@router.get("/preferred-models", response_model=List[str])
+def list_preferred_models(db: db_dependency) -> List[str]:
+    """List the Preferred Model ids already used, for the form's autocomplete.
+
+    Returns:
+        Each distinct Preferred Model id on any Challenge's Submissions that
+        were not deleted, sorted.
+    """
+    rows = (
+        db.query(models.Submission.preferred_model)
+        .filter(models.Submission.preferred_model.isnot(None), models.Submission.is_live)
+        .distinct()
+        .order_by(models.Submission.preferred_model)
+        .all()
+    )
+    return [preferred_model for (preferred_model,) in rows]
 
 @router.get("/{submission_id}", response_model=SubmissionRead)
-async def get_submission(db: db_dependency, submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION)):
-    submission = db.query(models.Submission).filter(models.Submission.id == submission_id).first()
-    if not submission:
-        raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
-    return submission
+async def get_submission(
+    db: db_dependency, submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION)
+) -> models.Submission:
+    """Read a Submission that was not deleted."""
+    return _live_submission_or_404(db, submission_id)
 
 @router.get("/{submission_id}/status", response_model=SubmissionStatusResponse)
 async def get_submission_status(
     db: db_dependency, 
     submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION)
-):
+) -> models.Submission:
     """
-    Get the current processing status of a submission.
-    
-    Use this endpoint to track the progress of your submission after creation.
-    This endpoint checks the fast in-memory cache first for instant responses,
-    then falls back to the database if needed.
-    
+    Get where a Submission is in scoring, to poll after creating it.
+
     Status values:
-    - pending: Submission created, waiting to start processing
-    - processing: File upload and evaluation in progress  
-    - completed: All processing completed successfully
-    - failed: Processing failed, check status_message for details
+    - pending: stored, waiting for a worker
+    - processing: being scored
+    - completed: scored; ``headline_metric`` and ``score_details`` are set
+    - failed: ``status_message`` says why
     """
-    submission_id_str = str(submission_id)
-    
-    # First, try to get status from fast cache
-    cached_progress = get_submission_progress(submission_id_str)
-    if cached_progress:
-        # Cache hit - return instantly without database query
-        logging.info(f"Fast cache hit for submission {submission_id_str}")
-        
-        # Map cache status to schema status
-        cache_to_schema_status = {
-            CacheStatus.PENDING: SubmissionStatus.PENDING,
-            CacheStatus.PROCESSING: SubmissionStatus.PROCESSING,
-            CacheStatus.UPLOADING: SubmissionStatus.PROCESSING,  # Map uploading to processing
-            CacheStatus.VALIDATING: SubmissionStatus.PROCESSING,  # Map validating to processing
-            CacheStatus.EVALUATING: SubmissionStatus.PROCESSING,  # Map evaluating to processing
-            CacheStatus.COMPLETED: SubmissionStatus.COMPLETED,
-            CacheStatus.FAILED: SubmissionStatus.FAILED
-        }
-        
-        schema_status = cache_to_schema_status.get(cached_progress.status, SubmissionStatus.PROCESSING)
-        
-        return SubmissionStatusResponse(
-            id=submission_id,
-            status=schema_status,
-            status_message=cached_progress.message,
-            progress_percentage=cached_progress.progress_percentage,
-            current_step=cached_progress.step,
-            error_details=cached_progress.error_details,
-            created_at=None,  # We don't store timestamps in cache for speed
-            updated_at=None
-        )
-    
-    # Cache miss - fall back to database
-    logging.info(f"Cache miss for submission {submission_id_str}, querying database")
-    submission = db.query(models.Submission).filter(models.Submission.id == submission_id).first()
-    if not submission:
-        raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
-    
-    # For queue-based system, we rely on cache and database sync
-    # No need to check individual task status since workers manage their own state
-    
-    return SubmissionStatusResponse(
-        id=submission.id,
-        status=submission.status,
-        status_message=submission.status_message,
-        progress_percentage=None,  # Database doesn't store progress percentage
-        current_step=None,  # Database doesn't store current step
-        error_details=None,  # Database doesn't store detailed errors
-        created_at=submission.created_at,
-        updated_at=submission.updated_at
-    )
+    return _live_submission_or_404(db, submission_id)
 
 
 
-@router.delete("/{submission_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_submission(
-    db: db_dependency, 
+@router.post(
+    "/{submission_id}/resync",
+    response_model=SubmissionRead,
+    summary="Resync a submission's repo folder (admin)",
+    responses={
+        403: {"description": "The signed-in user is not an admin."},
+        409: {"description": "The Submission is not scored, so it is never published."},
+    },
+)
+def resync_submission(
+    db: db_dependency,
+    current_user: User = Depends(require_admin),
+    submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION),
+) -> models.Submission:
+    """
+    Resync a Submission (admin only): set its sync status to ``pending`` and
+    queue a sync of its Challenge, which rebuilds the Challenge Repo, this
+    Submission's folder included, from the database and object storage.
+    Typically used once a sync ``failed``.
+    """
+    submission = _live_submission_or_404(db, submission_id)
+    if submission.status != SubmissionStatus.COMPLETED:
+        raise HTTPException(status_code=409, detail="Only scored Submissions are published to the Challenge Repo")
+    submission.queue_sync()
+    db.get(models.Challenge, submission.challenge_id).queue_sync()
+    db.commit()
+    db.refresh(submission)
+    return submission
+
+
+@router.delete(
+    "/{submission_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a submission (submitter or admin)",
+    responses={
+        403: {"description": "The signed-in user neither made the Submission nor is an admin."},
+        404: {"description": "No Submission has that id, or it was already deleted."},
+    },
+)
+def delete_submission(
+    db: db_dependency,
     current_user: User = Depends(get_current_active_user),
-    submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION)
-):
+    storage: ObjectStorage = Depends(get_object_storage),
+    clock: Clock = Depends(get_clock),
+    submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION),
+) -> None:
     """
-    Delete a submission from the leaderboard.
-    
-    Authorization rules:
-    - Admin users can delete any submission
-    - Non-admin users can only delete their own submissions
+    Delete a Submission (its submitter or an admin). Submissions cannot be
+    edited, so this is how one is corrected: delete it and submit again.
+    It still counts toward that day's limit, and its Challenge stays Locked.
     """
-    try:
-        submission = db.query(models.Submission).filter(models.Submission.id == submission_id).first()
-        if not submission:
-            raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
-        
-        # Check authorization: admin can delete any submission, non-admin can only delete their own
-        if current_user.role != 'admin' and submission.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="You can only delete your own submissions")
-        
-        # Database CASCADE will automatically delete related results
-        db.delete(submission)
-        db.commit()
-        
-        return {"message": "Submission and related records deleted successfully"}
-    
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        raise
-    except Exception as e:
-        db.rollback()
-        # Return detailed error information
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to delete submission {submission_id}: {str(e)}"
-        )
+    submission = _live_submission_or_404(db, submission_id)
+    if current_user.role != ADMIN_ROLE and submission.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You can only delete your own submissions")
+    delete_submission_and_files(db, storage, submission, at=clock())
 
 # ******** basic endpoints ********
 
 
-# ******** upload json file ********
-@router.post("/create-submission", response_model=SubmissionCreatedResponse, status_code=status.HTTP_202_ACCEPTED)
-async def create_submission(
+# ******** create a submission ********
+def submission_form(
+    submission_type: str = Form(..., alias="type", description="Submission Type: model, prompt or skill"),
+    name: str = Form("", description="Name of the Submission; for a Model, the model name (reused or created)"),
+    description: str = Form("", description="Description of the Submission; for a Prompt or Skill, how to run it"),
+    model_link: Optional[str] = Form(None, description="Model only: optional https link to the model"),
+    preferred_model: Optional[str] = Form(None, description="Prompt or Skill: the exact model id it was run with"),
+    license_: Optional[str] = Form(
+        None, alias="license", description="Prompt or Skill: CC-BY-4.0, CC0-1.0, MIT or Apache-2.0"
+    ),
+    prompt_text: Optional[str] = Form(None, description="Prompt only: the prompt, typed (or send prompt_file)"),
+    prompt_file: Optional[UploadFile] = File(None, description="Prompt only: the prompt as a text file"),
+    skill_file: Optional[UploadFile] = File(
+        None, description="Skill only: the skill as a zip (any layout; safety-checked, never extracted here)"
+    ),
+    predictions_file: UploadFile = File(..., description="Predictions File: JSONL {id, prediction} rows, one per Input id"),
+) -> SubmissionForm:
+    """The multipart form of a Submission, as the intake takes it (a FastAPI dependency).
+
+    Returns:
+        The form fields, with the uploaded files read into bytes.
+    """
+    return SubmissionForm(
+        type=submission_type,
+        name=name,
+        description=description,
+        model_link=model_link,
+        preferred_model=preferred_model,
+        license=license_,
+        prompt_text=prompt_text,
+        prompt_file=_read(prompt_file),
+        skill_file=_read(skill_file),
+        predictions=predictions_file.file.read(),
+    )
+
+
+def _read(upload: Optional[UploadFile]) -> Optional[bytes]:
+    return upload.file.read() if upload is not None else None
+
+
+def submission_intake(
+    db: db_dependency,
+    storage: ObjectStorage = Depends(get_object_storage),
+    submission_queue: SubmissionQueue = Depends(get_submission_queue),
+    clock: Clock = Depends(get_clock),
+) -> SubmissionIntake:
+    """The Submission intake, wired to the request's outside world (a FastAPI dependency).
+
+    Returns:
+        An intake on the request's session, object storage, queue and clock.
+    """
+    return SubmissionIntake(db=db, storage=storage, submission_queue=submission_queue, clock=clock)
+
+
+def _live_challenge_or_404(db: Session, challenge_id: uuid.UUID) -> models.Challenge:
+    challenge = (
+        db.query(models.Challenge)
+        .filter(models.Challenge.id == challenge_id, models.Challenge.deleted_at.is_(None))
+        .one_or_none()
+    )
+    if challenge is None:
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    return challenge
+
+
+@router.post(
+    "/create-submission",
+    response_model=SubmissionCreatedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Submit to a challenge",
+    responses={
+        404: {"description": "No live Challenge has that id."},
+        422: {"description": "Invalid Submission: ``errors`` lists each problem; nothing was stored."},
+        429: {
+            "model": DailyLimitResponse,
+            "description": "Daily limit reached on this Challenge; ``reset_at`` is the next 00:00 UTC. Nothing was stored.",
+        },
+    },
+)
+def create_submission(
     db: db_dependency,
     current_user: User = Depends(get_current_active_user),
-    file: UploadFile = File(..., description="JSON file containing inference results with 'filename' and 'prediction' columns"),
-    model_name: str = Form(..., description="Name of the model used for inference (you can add new model name and it will create in our model table only if the submission file passes the validation.)"),
-    challenge_id: uuid.UUID = Form(..., description="ID of the challenge for evaluation (basically holds the ground truth file)"),
-    description: str = Form(..., description="Description of the submission (will come from front end)")
-):
+    intake: SubmissionIntake = Depends(submission_intake),
+    clock: Clock = Depends(get_clock),
+    challenge_id: uuid.UUID = Form(..., description="ID of the Challenge submitted to"),
+    form: SubmissionForm = Depends(submission_form),
+) -> Union[SubmissionCreatedResponse, JSONResponse]:
     """
-    Legacy EvalAI-style submission scored with CER/WER against a ground-truth
-    URL. Challenges no longer have that URL: their Ground Truth is a private
-    storage key scored through a Scorer. Submitting returns 501 until RFC 2
-    (Challenge Submissions) rebuilds this endpoint.
+    Submit to a Challenge (signed-in users). Every check runs before anything
+    is stored; on any problem the answer is 422 with every error. A valid
+    Submission is stored ``pending``, Locks the Challenge if it is the first,
+    and is scored in the background with the Challenge's Scorer: poll
+    ``GET /submissions/{id}/status``.
     """
-    raise HTTPException(
-        status_code=501,
-        detail="Submitting to a Challenge is not supported until RFC 2 (Challenge Submissions).",
+    challenge = _live_challenge_or_404(db, challenge_id)
+    try:
+        submission = intake.submit(challenge, current_user, form)
+    except DailyLimitReached as exc:
+        return _daily_limit_response(exc, clock())
+    except SubmissionRejected as exc:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"detail": "The Submission is invalid.", "errors": [e.to_dict() for e in exc.errors]},
+        )
+    return SubmissionCreatedResponse(
+        id=submission.id, status=submission.status.value, message="Submission accepted; scoring has been queued."
+    )
+
+
+def _daily_limit_response(exc: DailyLimitReached, now: datetime.datetime) -> JSONResponse:
+    """429 with the reset time as ISO 8601 UTC, and Retry-After in seconds."""
+    retry_after = max(0, math.ceil((exc.reset_at - now).total_seconds()))
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content=DailyLimitResponse(detail=str(exc), reset_at=f"{exc.reset_at:%Y-%m-%dT%H:%M:%S}Z").model_dump(),
+        headers={"Retry-After": str(retry_after)},
     )
 
 # ******** Monitoring endpoints ********

@@ -115,7 +115,8 @@ def test_upgrade_leaves_arena_challenges_users_models_and_categories(legacy_data
     assert _count("category") == 1
 
 
-def test_upgraded_challenge_table_matches_the_model(legacy_database, alembic_cfg):
+@pytest.mark.parametrize("table", ["challenge", "submission"])
+def test_upgraded_table_matches_the_model(legacy_database, alembic_cfg, table):
     from alembic import command
     from alembic.autogenerate import compare_metadata
     from alembic.migration import MigrationContext
@@ -126,13 +127,79 @@ def test_upgraded_challenge_table_matches_the_model(legacy_database, alembic_cfg
 
     with database.engine.connect() as conn:
         diffs = compare_metadata(MigrationContext.configure(conn), database.Base.metadata)
-    challenge_diffs = [
+    table_diffs = [
         d
         for d in diffs
-        if "table=<challenge>" in repr(d) or "'challenge'" in repr(d)
+        if f"table=<{table}>" in repr(d) or f"'{table}'" in repr(d)
         # Every model declares its primary key ``unique=True`` too; create_all
         # folds that into the primary key, autogenerate reports it on every
         # table. Not a migration difference.
-        if repr(d) != "('add_constraint', UniqueConstraint(Column('id', NullType(), table=<challenge>)))"
+        if repr(d) != f"('add_constraint', UniqueConstraint(Column('id', NullType(), table=<{table}>)))"
     ]
-    assert challenge_diffs == []
+    assert table_diffs == []
+
+
+def test_downgrade_from_head_restores_the_previous_submission_table(legacy_database, alembic_cfg):
+    """The Submission fields migration can be undone back to ``b7d2e4f1c8a6``."""
+    from alembic import command
+    from sqlalchemy import inspect
+
+    import database
+
+    command.upgrade(alembic_cfg, "head")
+    command.downgrade(alembic_cfg, "b7d2e4f1c8a6")
+
+    columns = {c["name"] for c in inspect(database.engine).get_columns("submission")}
+    assert "dataset_url" in columns
+    assert not columns & {
+        "type", "name", "model_link", "predictions_url", "headline_metric", "score_details",
+        "preferred_model", "license", "artifact_url", "repo_path", "sync_status", "deleted_at",
+    }
+
+
+def test_downgrade_drops_the_prompt_submission_fields(legacy_database, alembic_cfg):
+    """The Prompt fields migration can be undone back to ``c4e8a2b6d1f3``,
+    keeping the Model Submission fields."""
+    from alembic import command
+    from sqlalchemy import inspect
+
+    import database
+
+    command.upgrade(alembic_cfg, "head")
+    command.downgrade(alembic_cfg, "c4e8a2b6d1f3")
+
+    columns = {c["name"] for c in inspect(database.engine).get_columns("submission")}
+    assert "predictions_url" in columns
+    assert not columns & {"preferred_model", "license", "artifact_url", "deleted_at"}
+
+
+def test_downgrade_drops_the_submission_repo_sync_fields(legacy_database, alembic_cfg):
+    """The repo sync migration can be undone back to ``d5f1b3c7e9a2``,
+    keeping the Prompt Submission fields."""
+    from alembic import command
+    from sqlalchemy import inspect
+
+    import database
+
+    command.upgrade(alembic_cfg, "head")
+    command.downgrade(alembic_cfg, "d5f1b3c7e9a2")
+
+    columns = {c["name"] for c in inspect(database.engine).get_columns("submission")}
+    assert "preferred_model" in columns
+    assert not columns & {"repo_path", "sync_status", "deleted_at"}
+
+
+def test_downgrade_drops_the_submission_deletion_marker(legacy_database, alembic_cfg):
+    """The deletion marker migration can be undone back to ``d5f1a3c7e9b2``,
+    keeping the repo sync fields."""
+    from alembic import command
+    from sqlalchemy import inspect
+
+    import database
+
+    command.upgrade(alembic_cfg, "head")
+    command.downgrade(alembic_cfg, "d5f1a3c7e9b2")
+
+    columns = {c["name"] for c in inspect(database.engine).get_columns("submission")}
+    assert "sync_status" in columns
+    assert "deleted_at" not in columns

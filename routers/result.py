@@ -1,5 +1,5 @@
 from fastapi import APIRouter, status, HTTPException, Depends, Path, Body
-from typing import Annotated, List
+from typing import Annotated, List, Optional
 from sqlalchemy.orm import Session
 from database import get_db
 from schemas.result import ResultCreate, ResultRead, ResultReadNested, ResultReadWithChallenge
@@ -31,6 +31,12 @@ def _refuse_deleted_challenge(db: Session, challenge_id: uuid.UUID) -> None:
         raise HTTPException(status_code=404, detail="Challenge not found")
 
 
+def _live_submission(db: Session, submission_id: uuid.UUID) -> Optional[Submission]:
+    """The Submission, or None when it does not exist or was deleted: a
+    deleted Submission's results are off the leaderboard."""
+    return Submission.live(db).filter(Submission.id == submission_id).first()
+
+
 @router.get("/challenge/{challenge_id}", response_model=List[ResultReadNested], status_code=status.HTTP_200_OK)
 async def get_results_by_challenge(
     db: db_dependency,
@@ -39,7 +45,7 @@ async def get_results_by_challenge(
     """Get all results for a specific challenge"""
     _refuse_deleted_challenge(db, challenge_id)
     # Get all submissions for the challenge
-    submissions = db.query(Submission).filter(Submission.challenge_id == challenge_id).all()
+    submissions = Submission.live(db).filter(Submission.challenge_id == challenge_id).all()
     
     if not submissions:
         return []
@@ -52,7 +58,7 @@ async def get_results_by_challenge(
     
     nested_results = []
     for result in results:
-        submission = db.query(Submission).filter(Submission.id == result.submission_id).first()
+        submission = _live_submission(db, result.submission_id)
         if not submission:
             continue
         model = db.query(Model).filter(Model.id == submission.model_id).first()
@@ -73,7 +79,6 @@ async def get_results_by_challenge(
             'model_id': submission.model_id,
             'challenge_id': submission.challenge_id,  # Include challenge_id
             'description': submission.description,
-            'dataset_url': submission.dataset_url,
             'created_at': submission.created_at,
             'updated_at': submission.updated_at,
             'model': model_data
@@ -104,7 +109,7 @@ async def list_all_results(db: db_dependency):
         
         nested_results = []
         for result in results:
-            submission = db.query(Submission).filter(Submission.id == result.submission_id).first()
+            submission = _live_submission(db, result.submission_id)
             if not submission:
                 continue
             model = db.query(Model).filter(Model.id == submission.model_id).first()
@@ -125,7 +130,6 @@ async def list_all_results(db: db_dependency):
                 'model_id': submission.model_id,
                 'challenge_id': submission.challenge_id,  # Include challenge_id
                 'description': submission.description,
-                'dataset_url': submission.dataset_url,
                 'created_at': submission.created_at,
                 'updated_at': submission.updated_at,
                 'model': model_data
@@ -156,7 +160,7 @@ async def list_results_with_challenge_id(db: db_dependency):
         
         results_with_challenge = []
         for result in results:
-            submission = db.query(Submission).filter(Submission.id == result.submission_id).first()
+            submission = _live_submission(db, result.submission_id)
             if not submission:
                 continue
                 
@@ -241,7 +245,7 @@ async def debug_challenge_data(
     challenge = db.query(Challenge).filter(Challenge.id == challenge_id).first()
     
     # Get submissions
-    submissions = db.query(Submission).filter(Submission.challenge_id == challenge_id).all()
+    submissions = Submission.live(db).filter(Submission.challenge_id == challenge_id).all()
     
     # Get all results
     all_results = db.query(Result).all()
@@ -272,7 +276,7 @@ async def debug_all_data(db: db_dependency):
     from models.challenge import Challenge
     
     challenges = db.query(Challenge).all()
-    submissions = db.query(Submission).all() 
+    submissions = Submission.live(db).all()
     results = db.query(Result).all()
     
     return {

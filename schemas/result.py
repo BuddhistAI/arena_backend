@@ -60,10 +60,9 @@ class ModelReadNested(BaseModel):
 class SubmissionReadNested(BaseModel):
     id: uuid.UUID
     user_id: str
-    model_id: uuid.UUID
+    model_id: uuid.UUID | None = None
     challenge_id: uuid.UUID
     description: str | None = None
-    dataset_url: str | None = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
     model: ModelReadNested

@@ -170,6 +170,19 @@ def test_admins_read_a_deleted_challenge_that_the_arena_no_longer_shows(
     assert client.get(f"/challenges/{challenge['id']}").status_code == 404
 
 
+def test_a_deleted_challenge_records_when_it_was_deleted(client, admin_headers, category, clock):
+    """The deletion time is read from the arena's clock, in UTC."""
+    import datetime
+
+    challenge = created(create_challenge(client, admin_headers, category, title="Tibetan OCR"))
+    clock.set(datetime.datetime(2026, 11, 20, 8, 30, tzinfo=datetime.timezone.utc))
+
+    deleted = delete(client, challenge, admin_headers)
+
+    assert deleted.json()["deleted_challenge"]["deleted_at"] == "2026-11-20T08:30:00"
+    assert admin_read(client, challenge)["deleted_at"] == "2026-11-20T08:30:00"
+
+
 def test_only_admins_see_the_admin_view_of_challenges(client, admin_headers, user_headers, category):
     challenge = created(create_challenge(client, admin_headers, category, title="Tibetan OCR"))
 

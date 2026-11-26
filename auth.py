@@ -6,7 +6,7 @@ from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from database import get_db
-from models.user import User
+from models.user import ADMIN_ROLE, User
 import os
 from functools import lru_cache
 
@@ -212,8 +212,8 @@ def require_role(required_roles: list[str]):
     return role_checker
 
 
-# Admin means the user's role is "admin". Use as ``Depends(require_admin)``.
-require_admin = require_role(["admin"])
+# Admin means the user's role is ADMIN_ROLE. Use as ``Depends(require_admin)``.
+require_admin = require_role([ADMIN_ROLE])
 
 
 

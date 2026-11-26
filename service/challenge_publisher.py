@@ -55,7 +55,7 @@ def challenge_files(
     definition = challenge_json(challenge, inputs_url=inputs_url, media_url=media_url)
     files = template_files()
     files.update({
-        CHALLENGE_JSON: _json_bytes(definition),
+        CHALLENGE_JSON: json_bytes(definition),
         README_PATH: readme(definition).encode("utf-8"),
         SAMPLE_SUBMISSION_PATH: sample_predictions_file(challenge.scorer_name, input_ids),
     })
@@ -173,5 +173,13 @@ def readme(definition: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _json_bytes(value: Any) -> bytes:
+def json_bytes(value: Any) -> bytes:
+    """A JSON file as the Challenge Repo holds it: UTF-8, indented, newline-ended.
+
+    Args:
+        value: The JSON value.
+
+    Returns:
+        The file's content.
+    """
     return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")

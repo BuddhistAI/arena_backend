@@ -5,7 +5,13 @@ database named by ``TEST_DATABASE_URL``. The schema is rebuilt from the models
 once per run and every table is emptied after each test.
 
 Authentication is replaced by a stand-in that treats the bearer token as a
-user id, so ``headers_for(user)`` signs a request in as that user.
+user id, so ``headers_for(user)`` signs a request in as that user;
+``admin_headers`` and ``user_headers`` sign in a fresh admin or user, and a
+request without headers comes from an anonymous visitor.
+
+The outside world is faked: ``storage`` (object storage), ``repo_host``
+(Challenge Repos) and ``clock`` (now). Background work runs only when a test
+drains ``sync_worker`` or ``submission_worker``.
 """
 
 import os
@@ -104,15 +110,48 @@ def repo_host():
 
 
 @pytest.fixture
-def client(app, storage, repo_host):
+def clock():
+    """The clock the API and the workers read "now" from during a test.
+    ``clock.set(...)`` and ``clock.advance(...)`` move it."""
+    from ports.clock import FakeClock
+
+    return FakeClock()
+
+
+@pytest.fixture
+def submission_queue():
+    """The queue the API puts submissions on during a test. Nothing takes
+    work off it until the test drains ``submission_worker``."""
+    from submission_worker import SubmissionQueue
+
+    return SubmissionQueue()
+
+
+@pytest.fixture
+def submission_worker(app, submission_queue, storage):
+    """The submission worker, storing to the in-memory object storage. Tests
+    call ``submission_worker.drain()`` to run every queued submission to
+    completion on the test's thread."""
+    import database
+    from submission_worker import SubmissionWorker
+
+    return SubmissionWorker(
+        submission_queue=submission_queue, session_factory=database.SessionLocal, storage=storage
+    )
+
+
+@pytest.fixture
+def client(app, storage, repo_host, submission_queue, clock):
     from fastapi import Depends, HTTPException
     from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
     import auth
     from database import get_db
     from models.user import User
+    from ports.clock import get_clock
     from ports.object_storage import get_object_storage
     from ports.repo_host import get_repo_host
+    from submission_worker import get_submission_queue
 
     def authenticate_by_user_id(
         credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
@@ -126,6 +165,8 @@ def client(app, storage, repo_host):
     app.dependency_overrides[auth.authenticate] = authenticate_by_user_id
     app.dependency_overrides[get_object_storage] = lambda: storage
     app.dependency_overrides[get_repo_host] = lambda: repo_host
+    app.dependency_overrides[get_submission_queue] = lambda: submission_queue
+    app.dependency_overrides[get_clock] = lambda: clock
     # Not used as a context manager, so startup hooks (background workers,
     # cache cleanup) do not run during tests.
     yield _test_client(app)
@@ -170,13 +211,15 @@ def user_headers(make_user):
 
 
 @pytest.fixture
-def make_sync_worker(app, storage, repo_host):
+def make_sync_worker(app, storage, repo_host, clock):
     """``make_sync_worker(**options)`` builds a Sync Worker that publishes to
-    the in-memory repo host, e.g. with a lower committed-Inputs limit."""
+    the in-memory repo host and reads the test's clock, e.g. with a lower
+    committed-Inputs limit."""
     import database
     from sync_worker import SyncWorker
 
     def _make_sync_worker(**options):
+        options.setdefault("clock", clock)
         return SyncWorker(
             session_factory=database.SessionLocal, storage=storage, repo_host=repo_host, **options
         )

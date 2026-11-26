@@ -1,6 +1,7 @@
 from sqlalchemy import Column, String, DateTime, JSON, ForeignKey, Integer, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from database import Base
+from models.columns import one_of
 import datetime
 import enum
 import uuid
@@ -22,16 +23,6 @@ class Direction(str, enum.Enum):
     HIGHER_IS_BETTER = "higher_is_better"
 
 
-def utc_now() -> datetime.datetime:
-    """Now in naive UTC, like the Challenge timestamp columns."""
-    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-
-
-def _one_of(column: str, values: type) -> str:
-    """SQL check that ``column`` holds one of the enum's values."""
-    return f"{column} IN ({', '.join(repr(member.value) for member in values)})"
-
-
 class Challenge(Base):
     """
     A task with public Inputs, private Ground Truth and one locked Scorer,
@@ -39,8 +30,8 @@ class Challenge(Base):
     """
     __tablename__ = "challenge"
     __table_args__ = (
-        CheckConstraint(_one_of("sync_status", SyncStatus), name="ck_challenge_sync_status"),
-        CheckConstraint(_one_of("direction", Direction), name="ck_challenge_direction"),
+        CheckConstraint(one_of("sync_status", SyncStatus), name="ck_challenge_sync_status"),
+        CheckConstraint(one_of("direction", Direction), name="ck_challenge_direction"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, unique=True, nullable=False)
