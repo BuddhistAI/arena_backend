@@ -96,7 +96,7 @@ def test_the_detail_shows_the_headline_metric_and_public_summary_with_the_scorer
         {"key": "corpus", "label": "Corpus WER", "value": 0.2, "format": {"style": "percent", "decimals": 2}}
     ]
     assert submission["scorer"]["label"] == wer["scorer_label"]
-    assert submission["scorer"]["format"] == {"style": "percent", "decimals": 2}
+    assert submission["scorer"]["display_format"] == {"style": "percent", "decimals": 2}
 
 
 def test_the_detail_shows_the_rank_the_leaderboard_shows(

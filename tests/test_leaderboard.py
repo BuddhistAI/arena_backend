@@ -264,7 +264,7 @@ def test_the_leaderboard_names_its_scorer_and_how_to_show_its_numbers(client, ch
         "name": "cer",
         "label": "Character Error Rate (CER)",
         "direction": "lower_is_better",
-        "format": {"style": "percent", "decimals": 2},
+        "display_format": {"style": "percent", "decimals": 2},
         "public_summary": [
             {"key": "corpus", "label": "Corpus CER", "format": {"style": "percent", "decimals": 2}}
         ],
@@ -280,7 +280,7 @@ def test_a_higher_is_better_scorer_is_described_with_its_own_direction_and_forma
     scorer = leaderboard(client, mcq_challenge(client, admin_headers, category))["scorer"]
 
     assert (scorer["name"], scorer["direction"]) == ("mcq_accuracy", "higher_is_better")
-    assert scorer["format"] == {"style": "percent", "decimals": 1}
+    assert scorer["display_format"] == {"style": "percent", "decimals": 1}
     assert [entry["key"] for entry in scorer["public_summary"]] == ["n_correct", "n_total"]
 
 

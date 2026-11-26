@@ -62,7 +62,7 @@ class LeaderboardScorer:
     name: str
     label: str
     direction: Direction
-    format: scorer_catalogue.DisplayFormat
+    display_format: scorer_catalogue.DisplayFormat
     public_summary: List[scorer_catalogue.SummaryEntry]
 
 
@@ -185,7 +185,7 @@ def read_scorer(challenge: Challenge) -> LeaderboardScorer:
         name=challenge.scorer_name,
         label=challenge.scorer_label,
         direction=Direction(challenge.direction),
-        format=scorer_catalogue.display_format(challenge.scorer_name),
+        display_format=scorer_catalogue.display_format(challenge.scorer_name),
         public_summary=scorer_catalogue.public_summary(challenge.scorer_name),
     )
 

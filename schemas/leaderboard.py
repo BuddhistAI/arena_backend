@@ -34,7 +34,7 @@ class LeaderboardScorerRead(BaseModel):
     name: str
     label: str = Field(..., description="Heads the Headline Metric's column")
     direction: Direction
-    format: DisplayFormat = Field(..., description="How to show the Headline Metric")
+    display_format: DisplayFormat = Field(..., description="How to show the Headline Metric")
     public_summary: List[PublicSummaryEntry] = Field(
         ..., description="The aggregate numbers a Submission's detail shows, in order"
     )
