@@ -143,6 +143,41 @@ def test_after_the_lock_title_description_and_image_stay_editable(client, admin_
     assert edited["repo_name"] == challenge["repo_name"]  # renaming never renames the repo
 
 
+@pytest.mark.parametrize("resent", [
+    pytest.param({"scorer_name": "cer", "scorer_params": '{"language": "bo"}'}, id="scorer-and-parameters"),
+    pytest.param({"scorer_name": "cer"}, id="scorer"),
+    pytest.param({"scorer_params": '{"language": "bo"}'}, id="parameters"),
+    pytest.param({"scorer_params": "{}"}, id="parameters-left-to-their-defaults"),
+])
+def test_after_the_lock_resending_the_stored_scorer_and_parameters_is_not_a_change(
+    client, admin_headers, db, challenge, storage, resent
+):
+    lock(db, challenge)
+    stored_before = dict(storage.objects)
+
+    response = edit_challenge(client, admin_headers, challenge["id"], data={"title": "Renamed", **resent})
+
+    assert response.status_code == 200, response.text
+    edited = read(client, challenge)
+    assert edited["title"] == "Renamed"
+    assert (edited["scorer_name"], edited["scorer_params"]) == ("cer", {"language": "bo"})
+    assert storage.objects == stored_before
+
+
+def test_after_the_lock_a_reuploaded_file_is_a_change_even_if_identical(
+    client, admin_headers, db, challenge, storage
+):
+    lock(db, challenge)
+    [inputs_key] = [key for key in storage.objects if key.endswith("inputs.jsonl")]
+
+    response = edit_challenge(
+        client, admin_headers, challenge["id"],
+        files={"inputs_file": jsonl_file("inputs.jsonl", storage.objects[inputs_key])},
+    )
+
+    assert response.status_code == 409, response.text
+
+
 def test_before_the_lock_a_ground_truth_that_does_not_match_the_stored_inputs_is_rejected(
     client, admin_headers, challenge, storage
 ):

@@ -12,6 +12,7 @@ from uuid import UUID
 from sqlalchemy.orm import joinedload
 from auth import require_admin
 import io
+import json
 import logging
 import re
 import unicodedata
@@ -275,7 +276,7 @@ DATA_FIELDS = ("scorer_name", "scorer_params", "inputs_file", "ground_truth_file
     summary="Edit a challenge",
     responses={
         403: {"description": "The signed-in user is not an admin."},
-        409: {"description": "The Challenge is Locked and a data or Scorer field was sent, or the title is taken."},
+        409: {"description": "The Challenge is Locked and a file was sent or the Scorer or parameters changed, or the title is taken."},
         422: {"description": "Invalid data: ``errors`` lists each problem."},
     },
 )
@@ -303,7 +304,8 @@ def update_challenge(
     blank field is left unchanged. Scorer, parameter and file changes are
     validated with the same rules as create, against the stored data for
     whatever is not replaced, and are refused with 409 once the Challenge is
-    Locked. Title, description and image stay editable. Any accepted change
+    Locked. A Scorer or parameters equal to the stored ones are not a change;
+    an uploaded file always is. Title, description and image stay editable. Any accepted change
     sets sync status to ``pending`` so the Sync Worker re-publishes the repo.
     """
     challenge = _live_challenge_or_404(db, challenge_id)
@@ -324,6 +326,7 @@ def update_challenge(
         }.items()
         if value is not None
     }
+    _drop_unchanged_scorer(challenge, sent)
     if not sent:
         return challenge
 
@@ -383,6 +386,26 @@ def update_challenge(
         raise HTTPException(status_code=409, detail=f"A Challenge titled {sent.get('title')!r} already exists.")
     db.refresh(challenge)
     return challenge
+
+
+def _drop_unchanged_scorer(challenge: Challenge, sent: dict) -> None:
+    """A Scorer or parameters equal to the stored ones are not a change: a form
+    may resend them with a new title, even after the Lock. Parameters are
+    compared with their defaults filled in. Uploaded files always count."""
+    if sent.get("scorer_name") == challenge.scorer_name:
+        del sent["scorer_name"]
+    if "scorer_name" not in sent and "scorer_params" in sent and _same_params(challenge, sent["scorer_params"]):
+        del sent["scorer_params"]
+
+
+def _same_params(challenge: Challenge, raw: str) -> bool:
+    try:
+        params = json.loads(raw)
+        if not isinstance(params, dict):
+            return False
+        return scorer_catalogue.validate_params(challenge.scorer_name, params) == challenge.scorer_params
+    except (ValueError, TypeError, scorer_catalogue.ScorerError):
+        return False
 
 
 def _existing_category_id(db: Session, value: str, errors: List[ChallengeDataError]) -> Optional[UUID]:
