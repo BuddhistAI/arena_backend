@@ -178,123 +178,15 @@ async def create_submission(
     description: str = Form(..., description="Description of the submission (will come from front end)")
 ):
     """
-    Upload and validate a JSON file containing ML inference results.
-    
-    This endpoint returns immediately with a submission ID. The file processing and evaluation
-    happen asynchronously in the background. Use the status endpoint to track progress.
-
-    The JSON file must contain 'filename' and 'prediction' columns.
-
-    Example usage:
-    - file: inference_results.json
-    - user_id: (automatically extracted from authentication token)
-    - model_name: my-awesome-model
-    - challenge_id: 123e4567-e89b-12d3-a456-426614174000
-    - description: This is a description of the submission
-
-    Returns:
-    - submission_id: Use this to track the status
-    - status: Current status (will be 'pending' initially)
-    - message: Status message
+    Legacy EvalAI-style submission scored with CER/WER against a ground-truth
+    URL. Challenges no longer have that URL: their Ground Truth is a private
+    storage key scored through a Scorer. Submitting returns 501 until RFC 2
+    (Challenge Submissions) rebuilds this endpoint.
     """
-    try:
-        # Validate file type
-        if not file.filename.lower().endswith('.json'):
-            raise HTTPException(
-                status_code=400,
-                detail="Only JSON files are allowed"
-            )
-        
-        file_content = await file.read()
-        
-        # Validate file size (limit to 50MB)
-        max_size = 50 * 1024 * 1024  # 50MB
-        if len(file_content) > max_size:
-            raise HTTPException(
-                status_code=413,
-                detail="File size exceeds 50MB limit"
-            )
-
-        # Create or get model record in database first
-        model_instance = create_or_get_model(db, model_name, current_user.id)
-        
-        # Fetch challenge for validation and get name
-        challenge_instance = db.query(models.Challenge).filter(models.Challenge.id == challenge_id).first()
-        if not challenge_instance:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Challenge with ID {challenge_id} not found"
-            )
-        challenge_name = challenge_instance.title
-        
-        # Create submission record in database with pending status
-        submission_data = {
-            "user_id": current_user.id,
-            "model_id": model_instance.id,
-            "challenge_id": challenge_id,
-            "description": description,
-            "dataset_url": None,  # Will be updated after S3 upload
-            "status": SubmissionStatus.PENDING,
-            "status_message": "Submission created, processing will begin shortly..."
-        }
-        
-        submission_instance = models.Submission(**submission_data)
-        db.add(submission_instance)
-        db.commit()
-        db.refresh(submission_instance)
-        
-        # Set initial cache state
-        set_submission_progress(
-            str(submission_instance.id), CacheStatus.PENDING,
-            "Submission queued for processing...",
-            progress=0, step="Queued"
-        )
-        
-        # Queue submission for processing by workers
-        task_queued = queue_submission_for_processing(
-            submission_id=str(submission_instance.id),
-            file_content=file_content,
-            filename=file.filename,
-            user_id=current_user.id,
-            model_id=str(model_instance.id),
-            challenge_name=challenge_name,
-            ground_truth_url=challenge_instance.ground_truth,
-            priority=0  # Normal priority
-        )
-        
-        if not task_queued:
-            # If we couldn't queue the task, mark as failed
-            submission_instance.status = SubmissionStatus.FAILED
-            submission_instance.status_message = "Failed to queue submission for processing"
-            db.commit()
-            
-            set_submission_progress(
-                str(submission_instance.id), CacheStatus.FAILED,
-                "Failed to queue submission",
-                progress=0, step="Failed", error="Queue system error"
-            )
-            
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to queue submission for processing"
-            )
-        
-        # Return immediate response with submission ID
-        return SubmissionCreatedResponse(
-            id=submission_instance.id,
-            status=submission_instance.status,
-            message="Submission created successfully. Use the status endpoint to track progress."
-        )
-        
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error during submission creation for file '{file.filename if file else 'unknown'}': {str(e)}"
-        )
+    raise HTTPException(
+        status_code=501,
+        detail="Submitting to a Challenge is not supported until RFC 2 (Challenge Submissions).",
+    )
 
 # ******** Monitoring endpoints ********
 @router.get("/cache/stats")

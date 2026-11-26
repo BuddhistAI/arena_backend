@@ -1,20 +1,15 @@
-from fastapi import APIRouter, status, HTTPException, Depends, Path, Body, UploadFile, File, Form
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, status, HTTPException, Depends, Path, Form
 from typing import Annotated, List, Optional
 from sqlalchemy.orm import Session
 import models
 from models import Challenge
 from models.user import User
 from database import get_db
-from schemas.challenge import ChallengeCreate, ChallengeRead, ChallengeWithCategoryRead
+from schemas.challenge import ChallengeRead, ChallengeWithCategoryRead
 from uuid import UUID
 from sqlalchemy.orm import joinedload
-from CRUD.ground_truth_upload_s3 import process_ground_truth_file
 from auth import get_current_active_user
 import logging
-import uuid
-import requests
-import io
 from datetime import datetime
 
 # Constants
@@ -46,169 +41,19 @@ async def get_challenge(db: db_dependency, challenge_id: UUID = Path(..., descri
         raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
     return challenge
 
-# for downloading ground truth file of a specific challenge
-
-@router.get("/{challenge_id}/download-ground-truth")
-async def download_ground_truth(
-    db: db_dependency, 
-    challenge_id: UUID = Path(..., description="This is the ID of the challenge")
-):
-    """
-    Download the ground truth file for a specific challenge.
-    
-    Returns the ground truth JSON file as a downloadable attachment.
-    """
-    try:
-        # Find the challenge
-        challenge = db.query(Challenge).filter(Challenge.id == challenge_id).first()
-        if not challenge:
-            raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
-        
-        # Check if ground truth URL exists
-        if not challenge.ground_truth:
-            raise HTTPException(
-                status_code=404, 
-                detail="Ground truth file not found for this challenge"
-            )
-        
-        logging.info(f"Downloading ground truth for challenge {challenge_id}: {challenge.ground_truth}")
-        
-        # Download the file from S3 URL
-        try:
-            # Disable SSL verification for S3 URLs to avoid certificate issues with custom bucket names
-            verify_ssl = False if 'amazonaws.com' in challenge.ground_truth else True
-            response = requests.get(challenge.ground_truth, timeout=30, verify=verify_ssl)
-            response.raise_for_status()  # Raises exception for bad status codes
-            
-            # Get file content
-            file_content = response.content
-            
-            # Extract filename from URL or use default
-            filename = f"ground_truth_{challenge.title.replace(' ', '_')}_{challenge_id}.json"
-            if '/' in challenge.ground_truth:
-                url_filename = challenge.ground_truth.split('/')[-1]
-                if url_filename.endswith('.json'):
-                    filename = url_filename
-            
-            # Create a streaming response
-            return StreamingResponse(
-                io.BytesIO(file_content),
-                media_type="application/json",
-                headers={
-                    "Content-Disposition": f"attachment; filename={filename}",
-                    "Content-Length": str(len(file_content))
-                }
-            )
-            
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Failed to download ground truth from S3: {str(e)}")
-            raise HTTPException(
-                status_code=503,
-                detail=f"Failed to download ground truth file: {str(e)}"
-            )
-        except Exception as e:
-            logging.error(f"Unexpected error downloading ground truth: {str(e)}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Internal server error while downloading ground truth: {str(e)}"
-            )
-            
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        raise
-    except Exception as e:
-        logging.error(f"Unexpected error in download_ground_truth endpoint: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
-
-# For creating a new challenge with ground truth file.
+# Creating a Challenge is being rebuilt around Scorers, Inputs and a private
+# Ground Truth (ticket 04). The legacy EvalAI-shaped create is retired.
 
 @router.post(
-    "/create", 
-    response_model=ChallengeRead, 
+    "/create",
     status_code=status.HTTP_201_CREATED,
     summary="Create a new challenge",
-    description="Create a new challenge with optional ground truth file upload"
 )
-async def create_new_challenge(
-    db: db_dependency,
-    current_user: User = Depends(get_current_active_user),
-    title: str = Form(..., description="Challenge title"),
-    category_id: UUID = Form(..., description="Category ID"),
-    image_uri: Optional[str] = Form(None, description="Challenge image URL"),
-    description: Optional[str] = Form(None, description="Challenge description"),
-    status: Optional[str] = Form("active", description="Challenge status"),
-    ground_truth_file: UploadFile = File(None, description="Ground truth JSON file for the challenge (optional)")
-):
-    """
-    Create a new challenge with optional ground truth file upload.
-    
-    If ground_truth_file is provided, it will be uploaded to S3 and the URL will be stored.
-    If not provided, the ground_truth field will be left empty and can be added later via update.
-    """
-    try:
-        logging.info(f"Creating new challenge: {title}")
-        
-        # Check if challenge title already exists
-        existing_challenge = db.query(Challenge).filter(Challenge.title == title).first()
-        if existing_challenge:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Challenge with title '{title}' already exists. Please choose a different title."
-            )
-        
-        # Create challenge instance without ground_truth initially
-        challenge_data = {
-            "title": title,
-            "category_id": category_id,
-            "created_by": current_user.id,  # Get user ID from authenticated token
-            "image_uri": image_uri,
-            "description": description,
-            "status": status,
-            "ground_truth": ""  # Will be updated if file is provided
-        }
-        
-        challenge_instance = Challenge(**challenge_data)
-        db.add(challenge_instance)
-        db.flush()  # Get the ID without committing
-        
-        # Handle ground truth file upload if provided
-        if ground_truth_file and ground_truth_file.filename:
-            logging.info(f"Processing ground truth file: {ground_truth_file.filename}")
-            
-            # Use CRUD function to handle all file processing
-            success, message, s3_url = await process_ground_truth_file(
-                file=ground_truth_file,
-                challenge_id=challenge_instance.id,
-                challenge_title=title
-            )
-            
-            if not success:
-                raise HTTPException(
-                    status_code=400,
-                    detail=message
-                )
-            
-            # Update challenge with ground truth URL
-            challenge_instance.ground_truth = s3_url
-            logging.info(f"Ground truth uploaded successfully: {s3_url}")
-        
-        # Commit the challenge
-        db.commit()
-        db.refresh(challenge_instance)
-        
-        logging.info(f"Challenge created successfully: {challenge_instance.id}")
-        return challenge_instance
-        
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        logging.error(f"Unexpected error creating challenge: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+async def create_new_challenge(current_user: User = Depends(get_current_active_user)):
+    raise HTTPException(
+        status_code=501,
+        detail="Creating a Challenge is not supported until the Scorer-based create endpoint ships.",
+    )
 
 # for updating a challenge
 
@@ -222,13 +67,10 @@ async def update_challenge(
     image_uri: Optional[str] = Form(None, description="Challenge image URL"),
     description: Optional[str] = Form(None, description="Challenge description"),
     status: Optional[str] = Form(None, description="Challenge status"),
-    ground_truth_file: UploadFile = File(None, description="Ground truth JSON file to replace existing one (optional)")
 ):
     """
-    Update an existing challenge with optional ground truth file upload.
-    
-    If ground_truth_file is provided, it will replace the existing ground truth file.
-    Other fields are optional and will only be updated if provided.
+    Update an existing challenge's presentation fields. Fields are optional
+    and only updated if provided. Data and Scorer edits come with ticket 05.
     """
     try:
         logging.info(f"Updating challenge: {challenge_id}")
@@ -266,27 +108,6 @@ async def update_challenge(
             challenge.description = description
         if status is not None:
             challenge.status = status
-        
-        # Handle ground truth file upload if provided
-        if ground_truth_file and ground_truth_file.filename:
-            logging.info(f"Processing new ground truth file: {ground_truth_file.filename}")
-            
-            # Use CRUD function to handle all file processing
-            success, message, s3_url = await process_ground_truth_file(
-                file=ground_truth_file,
-                challenge_id=challenge_id,
-                challenge_title=challenge.title
-            )
-            
-            if not success:
-                raise HTTPException(
-                    status_code=400,
-                    detail=message
-                )
-            
-            # Update challenge with new ground truth URL
-            challenge.ground_truth = s3_url
-            logging.info(f"Ground truth updated successfully: {s3_url}")
         
         # Commit changes
         db.commit()
