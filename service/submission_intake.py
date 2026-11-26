@@ -31,7 +31,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -156,7 +156,18 @@ class Stash:
             self.storage.delete(key)
 
 
-Columns = Callable[[Session, User, SubmissionForm, Stash], Dict[str, Any]]
+@dataclass(frozen=True)
+class TypeColumns:
+    """The Submission columns only some Submission Types set."""
+
+    model_id: Optional[uuid.UUID] = None
+    model_link: Optional[str] = None
+    preferred_model: Optional[str] = None
+    license: Optional[str] = None
+    artifact_url: Optional[str] = None
+
+
+Columns = Callable[[Session, User, SubmissionForm, Stash], TypeColumns]
 """The type's own Submission columns, storing its Artifact (through the
 stash, so it is cleaned up on a failed save) if it has one."""
 
@@ -247,7 +258,7 @@ class SubmissionIntake:
             status=SubmissionStatus.PENDING,
             created_at=now,
             updated_at=now,
-            **type_intake.columns(self.db, user, form, stash),
+            **asdict(type_intake.columns(self.db, user, form, stash)),
         )
 
 
@@ -404,29 +415,29 @@ def _check_skill_zip(candidate: Candidate) -> List[SubmissionError]:
     return [SubmissionError(SKILL_FILE_FIELD, problem.message) for problem in check_skill_zip(skill_file)]
 
 
-def _model_columns(db: Session, user: User, form: SubmissionForm, stash: Stash) -> Dict[str, Any]:
+def _model_columns(db: Session, user: User, form: SubmissionForm, stash: Stash) -> TypeColumns:
     """A Model Submission reuses the model of that name, or creates it."""
     model = create_or_get_model(db, form.name, user.id)
-    return {"model_id": model.id, "model_link": form.model_link}
+    return TypeColumns(model_id=model.id, model_link=form.model_link)
 
 
-def _prompt_columns(db: Session, user: User, form: SubmissionForm, stash: Stash) -> Dict[str, Any]:
+def _prompt_columns(db: Session, user: User, form: SubmissionForm, stash: Stash) -> TypeColumns:
     """A Prompt is stored as markdown, typed or uploaded alike."""
     prompt = form.prompt_file if form.prompt_file is not None else form.prompt_text.encode()
-    return {
-        "artifact_url": stash.put("prompt.md", prompt, content_type="text/markdown; charset=utf-8"),
-        "preferred_model": form.preferred_model,
-        "license": form.license,
-    }
+    return TypeColumns(
+        artifact_url=stash.put("prompt.md", prompt, content_type="text/markdown; charset=utf-8"),
+        preferred_model=form.preferred_model,
+        license=form.license,
+    )
 
 
-def _skill_columns(db: Session, user: User, form: SubmissionForm, stash: Stash) -> Dict[str, Any]:
+def _skill_columns(db: Session, user: User, form: SubmissionForm, stash: Stash) -> TypeColumns:
     """A Skill is stored as the zip it was uploaded as."""
-    return {
-        "artifact_url": stash.put("skill.zip", form.skill_file, content_type="application/zip"),
-        "preferred_model": form.preferred_model,
-        "license": form.license,
-    }
+    return TypeColumns(
+        artifact_url=stash.put("skill.zip", form.skill_file, content_type="application/zip"),
+        preferred_model=form.preferred_model,
+        license=form.license,
+    )
 
 
 SHARED_FORM_RULES: Tuple[Rule, ...] = (_required(NAME_FIELD), _required(DESCRIPTION_FIELD))
