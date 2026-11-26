@@ -4,7 +4,8 @@ from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Query, Session
 from sqlalchemy.sql.elements import ColumnElement
 from database import Base
-from models.challenge import SyncStatus, _one_of
+from models.challenge import SyncStatus
+from models.columns import one_of
 import datetime
 import uuid
 import enum
@@ -29,8 +30,8 @@ class Submission(Base):
     Scorer, with the Artifact that produced it (see GLOSSARY.md)."""
     __tablename__ = "submission"
     __table_args__ = (
-        CheckConstraint(_one_of("type", SubmissionType), name="ck_submission_type"),
-        CheckConstraint(_one_of("sync_status", SyncStatus), name="ck_submission_sync_status"),
+        CheckConstraint(one_of("type", SubmissionType), name="ck_submission_type"),
+        CheckConstraint(one_of("sync_status", SyncStatus), name="ck_submission_sync_status"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, unique=True, nullable=False)
