@@ -192,6 +192,27 @@ def test_predictions_that_do_not_match_the_scorer_are_rejected_naming_each_id(
     assert storage.objects == stored_before
 
 
+def test_past_the_reported_errors_a_last_error_counts_the_rest(
+    client, admin_headers, headers_for, participant, category
+):
+    """Only the first 100 problems are listed, followed by one error on the
+    same field saying how many more were found."""
+    ids = [str(n) for n in range(103)]
+    created = create_challenge(
+        client, admin_headers, category,
+        inputs=jsonl(*({"id": i, "input": "page.png"} for i in ids)),
+        ground_truth=jsonl(*({"id": i, "reference": "ཀ"} for i in ids)),
+    ).json()
+
+    response = submit(client, headers_for(participant), created, predictions=jsonl({"id": "0", "prediction": "ཀ"}))
+
+    assert response.status_code == 422, response.text
+    errors = response.json()["errors"]
+    assert len(errors) == 101
+    assert errors[-1]["field"] == "predictions_file"
+    assert "2 more problems" in errors[-1]["message"]
+
+
 @pytest.mark.parametrize(
     "link",
     [

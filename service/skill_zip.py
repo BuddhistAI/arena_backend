@@ -28,6 +28,8 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Dict, List, Optional, Tuple
 
+from service.form_errors import unlisted_problems
+
 MAX_ZIP_BYTES = 10 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 25 * 1024 * 1024
 MAX_ENTRIES = 200
@@ -63,8 +65,9 @@ def check_skill_zip(data: bytes) -> List[ZipProblem]:
         data: The uploaded zip, as bytes.
 
     Returns:
-        Every problem found (at most ``MAX_REPORTED_PROBLEMS`` entry problems),
-        or an empty list if the zip is safe to store and extract.
+        Every problem found (at most ``MAX_REPORTED_PROBLEMS`` entry problems,
+        then one saying how many more), or an empty list if the zip is safe
+        to store and extract.
     """
     if len(data) > MAX_ZIP_BYTES:
         return [ZipProblem(f"the zip is {_megabytes(len(data))}; the limit is {_megabytes(MAX_ZIP_BYTES)}")]
@@ -78,8 +81,15 @@ def check_skill_zip(data: bytes) -> List[ZipProblem]:
             return [ZipProblem(f"the zip holds {len(entries)} entries; the limit is {MAX_ENTRIES}")]
         problems = [problem for info in entries for problem in _entry_problems(info)] or _collision_problems(entries)
         if problems:
-            return problems[:MAX_REPORTED_PROBLEMS]
+            return _capped(problems)
         return _size_problems(archive, entries)
+
+
+def _capped(problems: List[ZipProblem]) -> List[ZipProblem]:
+    """The first ``MAX_REPORTED_PROBLEMS``, then one saying how many more."""
+    if len(problems) <= MAX_REPORTED_PROBLEMS:
+        return problems
+    return problems[:MAX_REPORTED_PROBLEMS] + [ZipProblem(unlisted_problems(len(problems) - MAX_REPORTED_PROBLEMS))]
 
 
 def skill_files(data: bytes) -> Dict[str, bytes]:

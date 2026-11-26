@@ -44,6 +44,7 @@ from ports.object_storage import ObjectStorage, private_key
 from service import scorer_catalogue
 from service.challenge_data import MAX_REPORTED_ERRORS, line_of
 from service.daily_limit import check_daily_limit
+from service.form_errors import unlisted_problems
 from service.skill_zip import check_skill_zip
 from submission_worker import SubmissionQueue, SubmissionTask
 
@@ -326,7 +327,7 @@ def _id_mismatch_errors(exc: scorer_catalogue.IdMismatchError) -> List[Submissio
         SubmissionError(PREDICTIONS_FIELD, f"Prediction id {i!r} is not an Input id", id=i)
         for i in exc.extra_ids
     ]
-    return (missing + extra)[:MAX_REPORTED_ERRORS]
+    return _capped(missing + extra)
 
 
 def _errors_per_id(scorer_name: str, inputs: dict, predictions: dict) -> List[SubmissionError]:
@@ -338,9 +339,15 @@ def _errors_per_id(scorer_name: str, inputs: dict, predictions: dict) -> List[Su
             scorer_catalogue.validate_predictions(scorer_name, {row_id: inputs[row_id]}, {row_id: prediction})
         except scorer_catalogue.ScorerError as exc:
             errors.append(SubmissionError(PREDICTIONS_FIELD, str(exc), id=row_id))
-            if len(errors) >= MAX_REPORTED_ERRORS:
-                break
-    return errors
+    return _capped(errors)
+
+
+def _capped(errors: List[SubmissionError]) -> List[SubmissionError]:
+    """The first ``MAX_REPORTED_ERRORS``, then one on the same field saying how many more."""
+    if len(errors) <= MAX_REPORTED_ERRORS:
+        return errors
+    unlisted = SubmissionError(errors[0].field, unlisted_problems(len(errors) - MAX_REPORTED_ERRORS))
+    return errors[:MAX_REPORTED_ERRORS] + [unlisted]
 
 
 def _check_model_link(candidate: Candidate) -> List[SubmissionError]:

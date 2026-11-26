@@ -313,6 +313,22 @@ def test_every_unsafe_entry_is_reported_at_once(client, headers_for, participant
     ]
 
 
+def test_past_twenty_unsafe_entries_a_last_error_counts_the_rest(
+    client, headers_for, participant, challenge, assert_rejected
+):
+    """Only 20 entries are listed, followed by one error saying how many more
+    problems were found."""
+    skill_zip = make_zip(*((f"skill/tool-{n}.exe", b"MZ") for n in range(25)))
+
+    response = submit_skill(client, headers_for(participant), challenge, skill_zip=skill_zip)
+
+    errors = assert_rejected(response)
+    assert len(errors) == 21
+    assert all("tool-" in e["message"] for e in errors[:20])
+    assert errors[20]["field"] == "skill_file"
+    assert "5 more problems" in errors[20]["message"]
+
+
 @pytest.mark.parametrize("field", ["preferred_model", "license"])
 def test_a_skill_without_preferred_model_or_license_is_rejected(
     client, headers_for, participant, challenge, assert_rejected, field
