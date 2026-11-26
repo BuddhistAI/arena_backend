@@ -44,7 +44,8 @@ def test_a_scored_model_submission_is_published_as_its_submission_json(
     client, challenge, scored, repo_host, sync_worker
 ):
     """A completed Model Submission gets ``models/<slug>-<id>/submission.json``
-    holding its metadata, and no other file."""
+    holding its metadata, its Public Summary beside its Headline Metric, and
+    no other file."""
     submission_id = scored(name="Google Vision OCR", model_link="https://cloud.google.com/vision")
 
     sync_worker.drain()
@@ -62,6 +63,9 @@ def test_a_scored_model_submission_is_published_as_its_submission_json(
         "submitter": "tenzin",
         "scorer_name": "cer",
         "headline_metric": 0.0,
+        "public_summary": [
+            {"key": "corpus", "label": "Corpus CER", "value": 0.0, "format": {"style": "percent", "decimals": 2}}
+        ],
         "preferred_model": None,
         "model_link": "https://cloud.google.com/vision",
         "license": None,

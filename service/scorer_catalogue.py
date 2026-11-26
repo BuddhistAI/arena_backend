@@ -45,6 +45,7 @@ __all__ = [
     "ScoreResult",
     "list_scorers",
     "describe_scorer",
+    "summarise",
     "validate_params",
     "validate_ground_truth",
     "validate_predictions",
@@ -79,6 +80,25 @@ def describe_scorer(name: str) -> dict[str, Any]:
         UnknownScorerError: If no Scorer has that name.
     """
     return buddhist_eval.get_scorer(name).describe()
+
+
+def summarise(name: str, details: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Reduce a Submission's stored score details to its Scorer's Public Summary.
+
+    The only way scores leave the arena: per-item scores are never part of it.
+
+    Args:
+        name: The Scorer's name.
+        details: The Scorer's details, as stored on the Submission.
+
+    Returns:
+        One ``{"key", "label", "value", "format"}`` dict per declared entry
+        present in ``details``, in declaration order.
+
+    Raises:
+        UnknownScorerError: If no Scorer has that name.
+    """
+    return buddhist_eval.get_scorer(name).summarise(details)
 
 
 def validate_params(name: str, params: Mapping[str, Any]) -> dict[str, Any]:

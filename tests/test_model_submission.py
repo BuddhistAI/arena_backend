@@ -58,14 +58,15 @@ def test_a_model_submission_is_scored_by_the_challenges_scorer(
     client, admin_headers, headers_for, participant, category, submission_worker
 ):
     """Once drained, the Submission is ``completed`` with the locked Scorer's
-    unrounded Headline Metric and details."""
+    unrounded Headline Metric and its Public Summary."""
     created = create_challenge(
         client, admin_headers, category,
         scorer_name="wer", scorer_params='{"language": "en"}',
         inputs=jsonl({"id": "a", "input": "clip a"}, {"id": "b", "input": "clip b"}),
         ground_truth=jsonl({"id": "a", "reference": "the cat sat"}, {"id": "b", "reference": "a dog"}),
     ).json()
-    # Item a is exact (WER 0); item b gets one of its two words wrong (WER 1/2).
+    # Item a is exact (WER 0); item b gets one of its two words wrong (WER 1/2):
+    # the mean is 1/4, and the corpus WER is 1 error in 5 words.
     predictions = jsonl({"id": "a", "prediction": "the cat sat"}, {"id": "b", "prediction": "a cat"})
 
     response = submit(client, headers_for(participant), created, predictions=predictions)
@@ -74,7 +75,9 @@ def test_a_model_submission_is_scored_by_the_challenges_scorer(
     submission = read(client, response.json()["id"])
     assert submission["status"] == "completed"
     assert submission["headline_metric"] == 0.25
-    assert submission["score_details"]["items"]["b"]["rate"] == 0.5
+    assert submission["public_summary"] == [
+        {"key": "corpus", "label": "Corpus WER", "value": 0.2, "format": {"style": "percent", "decimals": 2}}
+    ]
     assert submission["status_message"] is None
 
 
@@ -361,7 +364,7 @@ def test_a_scorer_error_fails_the_submission_with_the_message(
     assert submission["status"] == "failed"
     assert "invalid span" in submission["status_message"]
     assert submission["headline_metric"] is None
-    assert submission["score_details"] is None
+    assert submission["public_summary"] is None
 
 
 def test_a_predictions_file_missing_from_storage_fails_only_its_submission(

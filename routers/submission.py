@@ -95,7 +95,7 @@ async def get_submission_status(
     Status values:
     - pending: stored, waiting for a worker
     - processing: being scored
-    - completed: scored; ``headline_metric`` and ``score_details`` are set
+    - completed: scored; ``headline_metric`` and ``public_summary`` are set
     - failed: ``status_message`` says why
     """
     return _live_submission_or_404(db, submission_id)
