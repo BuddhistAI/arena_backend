@@ -1,13 +1,14 @@
 """Challenge repo host port: create a repo from the template, write a set of
 files in one commit, archive a repo.
 
-The GitHub App implementation comes with the Sync Worker (ticket 06); until
-then ``get_repo_host`` has nothing to return in production. Routes take the
-port with ``Depends(get_repo_host)``; tests override that dependency with
-``InMemoryRepoHost``.
+In production ``get_repo_host`` returns the GitHub App implementation
+(``ports.github_app_repo_host``), configured from the environment. Routes
+take the port with ``Depends(get_repo_host)``; tests override that dependency
+with ``InMemoryRepoHost`` and hand the same fake to the Sync Worker.
 """
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Dict, List, Mapping, Protocol, Union
 
 FileContent = Union[str, bytes]
@@ -110,6 +111,14 @@ class InMemoryRepoHost:
         self._repo(name).archived = True
 
 
+@lru_cache()
+def _github_app_repo_host() -> RepoHost:
+    from ports.github_app_repo_host import GitHubAppRepoHost
+
+    return GitHubAppRepoHost.from_env()
+
+
 def get_repo_host() -> RepoHost:
-    """FastAPI dependency for the challenge repo host port."""
-    raise RuntimeError("No challenge repo host is configured (GitHub App lands in ticket 06)")
+    """FastAPI dependency for the challenge repo host port: the BuddhistAI
+    GitHub App. Raises ``RuntimeError`` when the App is not configured."""
+    return _github_app_repo_host()

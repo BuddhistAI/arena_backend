@@ -8,6 +8,7 @@ from fastapi import Request
 from database import create_table
 from submission_cache import start_cache_cleanup
 from submission_worker import start_submission_workers
+from sync_worker import start_sync_worker
 import uvicorn
 
 from dotenv import load_dotenv
@@ -66,6 +67,7 @@ async def startup_event():
     """Initialize submission processing system when FastAPI starts"""
     start_cache_cleanup()  # Start cache cleanup task
     start_submission_workers()  # Start worker threads
+    start_sync_worker()  # Publish pending Challenges to their repos
     
 
 def custom_openapi():
