@@ -16,7 +16,7 @@ from __future__ import annotations
 import datetime
 import uuid
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import List, Optional
 
 from sqlalchemy import Select, Subquery, func, or_, select
 from sqlalchemy.orm import Session
@@ -61,9 +61,19 @@ class LeaderboardScorer:
 
     name: str
     label: str
-    direction: str
-    format: dict[str, Any]
-    public_summary: List[dict[str, Any]]
+    direction: Direction
+    format: scorer_catalogue.DisplayFormat
+    public_summary: List[scorer_catalogue.SummaryEntry]
+
+
+@dataclass(frozen=True)
+class LeaderboardCounts:
+    """Rows of the whole Leaderboard, in all and per Submission Type."""
+
+    all: int
+    model: int
+    prompt: int
+    skill: int
 
 
 @dataclass(frozen=True)
@@ -71,7 +81,7 @@ class Leaderboard:
     """One page of a Challenge's Leaderboard."""
 
     scorer: LeaderboardScorer
-    counts: dict[str, int]
+    counts: LeaderboardCounts
     total: int
     page: int
     limit: int
@@ -154,11 +164,11 @@ def read_rank(db: Session, submission: Submission) -> Optional[int]:
     ).scalar_one_or_none()
 
 
-def _counts(db: Session, ranked: Subquery) -> dict[str, int]:
+def _counts(db: Session, ranked: Subquery) -> LeaderboardCounts:
     """Rows of the whole Leaderboard, in all and per Submission Type."""
     per_type = dict(db.execute(select(ranked.c.type, func.count()).group_by(ranked.c.type)).all())
     counts = {kind.value: per_type.get(kind, 0) for kind in SubmissionType}
-    return {"all": sum(counts.values()), **counts}
+    return LeaderboardCounts(all=sum(counts.values()), **counts)
 
 
 def read_scorer(challenge: Challenge) -> LeaderboardScorer:
@@ -171,13 +181,12 @@ def read_scorer(challenge: Challenge) -> LeaderboardScorer:
     Returns:
         What its Submissions are ranked by and how their numbers are shown.
     """
-    described = scorer_catalogue.describe_scorer(challenge.scorer_name)
     return LeaderboardScorer(
         name=challenge.scorer_name,
         label=challenge.scorer_label,
-        direction=challenge.direction,
-        format=described["display_format"],
-        public_summary=described["public_summary"],
+        direction=Direction(challenge.direction),
+        format=scorer_catalogue.display_format(challenge.scorer_name),
+        public_summary=scorer_catalogue.public_summary(challenge.scorer_name),
     )
 
 

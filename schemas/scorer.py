@@ -1,14 +1,15 @@
-from typing import Any, Dict, List, Literal
+from typing import Any, Dict, List
 
 from pydantic import BaseModel
 
 from models.challenge import Direction
+from service.scorer_catalogue import DisplayStyle
 
 
 class DisplayFormat(BaseModel):
     """How a number is shown: as a percent or a decimal, with this many decimals."""
 
-    style: Literal["percent", "decimal"]
+    style: DisplayStyle
     decimals: int
 
 

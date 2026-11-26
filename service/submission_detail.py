@@ -57,7 +57,7 @@ class SubmissionDetail:
     model_link: Optional[str]
     preferred_model: Optional[str]
     license: Optional[str]
-    sync_status: str
+    sync_status: SyncStatus
     repo_path: Optional[str]
     repo_url: Optional[str]
     prompt_text: Optional[str]
@@ -102,7 +102,7 @@ def read_submission_detail(
         model_link=submission.model_link,
         preferred_model=submission.preferred_model,
         license=submission.license,
-        sync_status=submission.sync_status,
+        sync_status=SyncStatus(submission.sync_status),
         repo_path=submission.repo_path,
         repo_url=_repo_url(submission),
         prompt_text=_prompt_text(submission, storage),
