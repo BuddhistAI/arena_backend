@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from models import Challenge, Submission, User
@@ -81,6 +81,7 @@ def read_leaderboard(
     challenge_id: uuid.UUID,
     *,
     submission_type: Optional[SubmissionType] = None,
+    search: Optional[str] = None,
     page: int = 1,
     limit: int = DEFAULT_PAGE_SIZE,
 ) -> Leaderboard:
@@ -90,6 +91,8 @@ def read_leaderboard(
         db: Database session.
         challenge_id: The Challenge whose Leaderboard to read.
         submission_type: Show only rows of this Submission Type; None for all.
+        search: Show only rows whose name, submitter username or Preferred
+            Model contains this text, ignoring case; None or blank for all.
         page: Which page, from 1.
         limit: Rows per page, from 1; cut to ``MAX_PAGE_SIZE``.
 
@@ -109,6 +112,15 @@ def read_leaderboard(
     shown = select(ranked)
     if submission_type is not None:
         shown = shown.where(ranked.c.type == submission_type)
+    if search and search.strip():
+        text = search.strip()
+        shown = shown.where(
+            or_(
+                ranked.c.name.icontains(text, autoescape=True),
+                ranked.c.submitter.icontains(text, autoescape=True),
+                ranked.c.preferred_model.icontains(text, autoescape=True),
+            )
+        )
     shown = shown.order_by(ranked.c.rank).offset((page - 1) * limit).limit(limit)
     return Leaderboard(
         scorer=_scorer(challenge),

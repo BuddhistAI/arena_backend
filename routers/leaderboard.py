@@ -21,6 +21,9 @@ def get_leaderboard(
     submission_type: Optional[SubmissionType] = Query(
         None, alias="type", description="Show only this Submission Type; omit for all. Ranks are unchanged"
     ),
+    q: Optional[str] = Query(
+        None, description="Search text: matches name, submitter or Preferred Model, ignoring case"
+    ),
     page: int = Query(1, ge=1, description="Which page, from 1"),
     limit: int = Query(
         DEFAULT_PAGE_SIZE, ge=1, description=f"Rows per page; at most {MAX_PAGE_SIZE} are returned"
@@ -29,6 +32,6 @@ def get_leaderboard(
     """The Challenge's scored Submissions, ranked by Headline Metric in the
     Scorer's Direction, the earlier Submission first on a tie."""
     try:
-        return read_leaderboard(db, challenge_id, submission_type=submission_type, page=page, limit=limit)
+        return read_leaderboard(db, challenge_id, submission_type=submission_type, search=q, page=page, limit=limit)
     except ChallengeNotFound:
         raise HTTPException(status_code=404, detail="Challenge not found")

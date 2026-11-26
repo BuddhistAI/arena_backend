@@ -365,6 +365,49 @@ def test_filtering_by_submission_type_hides_other_rows_without_changing_a_rank(
     assert ranked_ids(board) == [(mixed_board[rank - 1], rank) for rank in expected_ranks]
 
 
+@pytest.mark.parametrize(
+    "q, expected_ranks",
+    [
+        ("WHISPER", [3]),  # Submission name, any case
+        ("claude", [2, 5]),  # Preferred Model, any case
+        ("by l", [5]),  # a substring from mid-name
+    ],
+)
+def test_searching_hides_rows_that_do_not_match_without_changing_a_rank(
+    client, challenge, mixed_board, q, expected_ranks
+):
+    """Search is a case-insensitive substring match over the name and the
+    Preferred Model; the rows found keep their overall Rank."""
+    board = leaderboard(client, challenge, q=q)
+
+    assert ranked_ids(board) == [(mixed_board[rank - 1], rank) for rank in expected_ranks]
+
+
+def test_searching_finds_a_submitters_rows_by_their_username(
+    client, headers_for, make_user, challenge, mixed_board, submission_worker, clock
+):
+    """Searching part of a username, in any case, finds that submitter's rows
+    at their overall Rank."""
+    tenzin = make_user("user", name="Tenzin")
+    sixth = submit_scored(client, headers_for(tenzin), challenge, submission_worker, clock)
+
+    assert ranked_ids(leaderboard(client, challenge, q="tENz")) == [(sixth, 6)]
+
+
+def test_search_text_is_matched_literally(client, challenge, mixed_board):
+    """A ``%`` or ``_`` in the search is a character to find, not a wildcard."""
+    assert leaderboard(client, challenge, q="%")["rows"] == []
+    assert leaderboard(client, challenge, q="_")["rows"] == []
+
+
+def test_a_type_filter_and_a_search_together_show_rows_matching_both(client, challenge, mixed_board):
+    """"OCR" names a Model (#1) and a Skill (#4); on the Skill tab it finds
+    only the Skill, still #4."""
+    board = leaderboard(client, challenge, type="skill", q="ocr")
+
+    assert ranked_ids(board) == [(mixed_board[3], 4)]
+
+
 def test_an_unknown_submission_type_is_refused(client, challenge):
     """Only model, prompt and skill are Submission Types; anything else answers 422."""
     response = client.get(f"/challenges/{challenge['id']}/leaderboard", params={"type": "dataset"})
