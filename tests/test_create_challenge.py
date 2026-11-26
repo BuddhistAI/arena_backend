@@ -435,11 +435,15 @@ def test_a_title_whose_repo_name_is_taken_is_rejected(client, admin_headers, cat
     assert len(client.get("/challenges/list").json()) == 1
 
 
-def test_a_title_that_cannot_name_a_repo_is_rejected(client, admin_headers, category, storage):
+def test_a_title_with_no_ascii_letter_or_digit_names_the_repo_after_the_challenge_id(
+    client, admin_headers, category
+):
     response = create_challenge(client, admin_headers, category, title="བོད་ཡིག")
 
-    [error] = assert_rejected(response, storage, client)
-    assert error["field"] == "title"
+    assert response.status_code == 201, response.text
+    created = response.json()
+    assert created["title"] == "བོད་ཡིག"
+    assert created["repo_name"] == "challenge-" + created["id"].replace("-", "")[:8]
 
 
 def test_an_unknown_category_is_rejected(client, admin_headers, storage):

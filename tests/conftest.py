@@ -167,3 +167,25 @@ def admin_headers(make_user):
 @pytest.fixture
 def user_headers(make_user):
     return headers_for(make_user("user"))
+
+
+@pytest.fixture
+def make_sync_worker(app, storage, repo_host):
+    """``make_sync_worker(**options)`` builds a Sync Worker that publishes to
+    the in-memory repo host, e.g. with a lower committed-Inputs limit."""
+    import database
+    from sync_worker import SyncWorker
+
+    def _make_sync_worker(**options):
+        return SyncWorker(
+            session_factory=database.SessionLocal, storage=storage, repo_host=repo_host, **options
+        )
+
+    return _make_sync_worker
+
+
+@pytest.fixture
+def sync_worker(make_sync_worker):
+    """The Sync Worker with its production settings. Tests call
+    ``sync_worker.drain()`` to run it until no sync work is left."""
+    return make_sync_worker()

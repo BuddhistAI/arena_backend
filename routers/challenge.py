@@ -59,13 +59,15 @@ async def get_challenge(db: db_dependency, challenge_id: UUID = Path(..., descri
 
 # for creating a challenge
 
-def repo_name_for(title: str) -> str:
+def repo_name_for(title: str, challenge_id: uuid.UUID) -> str:
     """``challenge-<slug-of-title>``: ASCII letters and digits, lowercased,
-    other runs of characters collapsed to one hyphen. Empty slug -> ''."""
+    other runs of characters collapsed to one hyphen. A title with no ASCII
+    letter or digit (e.g. all Tibetan) gives ``challenge-<short id>``, the
+    first 8 hex digits of the Challenge id."""
     ascii_title = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode()
     slug = re.sub(r"[^a-z0-9]+", "-", ascii_title.lower()).strip("-")
     slug = slug[:REPO_SLUG_MAX_LENGTH].strip("-")
-    return f"challenge-{slug}" if slug else ""
+    return f"challenge-{slug or challenge_id.hex[:8]}"
 
 
 def _invalid(errors: List[ChallengeDataError]) -> JSONResponse:
@@ -113,11 +115,6 @@ def create_new_challenge(
     """
     title = title.strip()
     errors: List[ChallengeDataError] = []
-    repo_name = repo_name_for(title)
-    if not repo_name:
-        errors.append(ChallengeDataError(
-            "title", "must contain at least one ASCII letter or digit, to name the Challenge Repo"
-        ))
     if db.get(models.Category, category_id) is None:
         errors.append(ChallengeDataError("category_id", f"no category with id {category_id}"))
 
@@ -136,6 +133,8 @@ def create_new_challenge(
     if errors:
         return _invalid(errors)
 
+    challenge_id = uuid.uuid4()
+    repo_name = repo_name_for(title, challenge_id)
     if db.query(Challenge).filter(Challenge.title == title).first():
         raise HTTPException(status_code=409, detail=f"A Challenge titled {title!r} already exists.")
     clash = db.query(Challenge).filter(Challenge.repo_name == repo_name).first()
@@ -145,7 +144,6 @@ def create_new_challenge(
             detail=f"The title gives the repo name {repo_name!r}, already used by the Challenge {clash.title!r}.",
         )
 
-    challenge_id = uuid.uuid4()
     inputs_key = public_key("challenges", str(challenge_id), "inputs.jsonl")
     ground_truth_key = private_key("challenges", str(challenge_id), "ground_truth.jsonl")
     media_archive_key = (
