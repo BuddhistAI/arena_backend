@@ -1,4 +1,6 @@
-from fastapi import APIRouter, status, HTTPException, Depends, Path, Form
+from fastapi import APIRouter, status, HTTPException, Depends, Path, Form, File, UploadFile
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
 from typing import Annotated, List, Optional
 from sqlalchemy.orm import Session
 import models
@@ -8,12 +10,26 @@ from database import get_db
 from schemas.challenge import ChallengeRead, ChallengeWithCategoryRead
 from uuid import UUID
 from sqlalchemy.orm import joinedload
-from auth import get_current_active_user
+from auth import get_current_active_user, require_admin
 import logging
+import re
+import unicodedata
+import uuid
 from datetime import datetime
+from models.challenge import SYNC_PENDING
+from ports.object_storage import ObjectStorage, get_object_storage, private_key, public_key
+from service import scorer_catalogue
+from service.challenge_data import (
+    ChallengeDataError,
+    InvalidChallengeData,
+    media_archive_size_limit,
+    validate_challenge_data,
+)
 
 # Constants
 CHALLENGE_NOT_FOUND_MESSAGE = "Challenge not found"
+# GitHub allows 100 characters in a repo name; leave room for "challenge-".
+REPO_SLUG_MAX_LENGTH = 89
 
 router = APIRouter(prefix="/challenges", tags=["challenges"])
 
@@ -41,19 +57,153 @@ async def get_challenge(db: db_dependency, challenge_id: UUID = Path(..., descri
         raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
     return challenge
 
-# Creating a Challenge is being rebuilt around Scorers, Inputs and a private
-# Ground Truth (ticket 04). The legacy EvalAI-shaped create is retired.
+# for creating a challenge
+
+def repo_name_for(title: str) -> str:
+    """``challenge-<slug-of-title>``: ASCII letters and digits, lowercased,
+    other runs of characters collapsed to one hyphen. Empty slug -> ''."""
+    ascii_title = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode()
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_title.lower()).strip("-")
+    slug = slug[:REPO_SLUG_MAX_LENGTH].strip("-")
+    return f"challenge-{slug}" if slug else ""
+
+
+def _invalid(errors: List[ChallengeDataError]) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "detail": "The Challenge data is invalid.",
+            "errors": [error.to_dict() for error in errors],
+        },
+    )
+
 
 @router.post(
     "/create",
+    response_model=ChallengeRead,
     status_code=status.HTTP_201_CREATED,
     summary="Create a new challenge",
+    responses={
+        403: {"description": "The signed-in user is not an admin."},
+        409: {"description": "The title, or the repo name derived from it, is taken."},
+        422: {"description": "Invalid data: ``errors`` lists each problem."},
+    },
 )
-async def create_new_challenge(current_user: User = Depends(get_current_active_user)):
-    raise HTTPException(
-        status_code=501,
-        detail="Creating a Challenge is not supported until the Scorer-based create endpoint ships.",
+def create_new_challenge(
+    db: db_dependency,
+    current_user: User = Depends(require_admin),
+    storage: ObjectStorage = Depends(get_object_storage),
+    max_media_archive_bytes: int = Depends(media_archive_size_limit),
+    title: str = Form(..., description="Challenge title; also names the Challenge Repo"),
+    category_id: UUID = Form(..., description="Category ID"),
+    image_uri: Optional[str] = Form(None, description="Challenge image URL"),
+    description: Optional[str] = Form(None, description="Challenge description"),
+    challenge_status: Optional[str] = Form("active", alias="status", description="Challenge status"),
+    scorer_name: str = Form(..., description="Name of a Scorer from GET /scorers"),
+    scorer_params: str = Form("{}", description="The Scorer's parameters as a JSON object"),
+    inputs_file: UploadFile = File(..., description="Inputs JSONL: {id, input, media?} rows"),
+    ground_truth_file: UploadFile = File(..., description="Ground Truth JSONL: {id, reference} rows"),
+    media_archive_file: Optional[UploadFile] = File(None, description="Optional Media Archive (zip)"),
+):
+    """
+    Create a Challenge (admin only). The files are validated against the
+    Scorer; the Inputs and Media Archive are stored publicly and the Ground
+    Truth privately. The Challenge starts with sync status ``pending``; the
+    Sync Worker publishes its Challenge Repo later.
+    """
+    title = title.strip()
+    errors: List[ChallengeDataError] = []
+    repo_name = repo_name_for(title)
+    if not repo_name:
+        errors.append(ChallengeDataError(
+            "title", "must contain at least one ASCII letter or digit, to name the Challenge Repo"
+        ))
+    if db.get(models.Category, category_id) is None:
+        errors.append(ChallengeDataError("category_id", f"no category with id {category_id}"))
+
+    media_archive = media_archive_file.file if media_archive_file is not None else None
+    try:
+        validated = validate_challenge_data(
+            inputs=inputs_file.file.read(),
+            ground_truth=ground_truth_file.file.read(),
+            scorer_name=scorer_name,
+            scorer_params=scorer_params,
+            media_archive=media_archive,
+            max_media_archive_bytes=max_media_archive_bytes,
+        )
+    except InvalidChallengeData as exc:
+        errors.extend(exc.errors)
+    if errors:
+        return _invalid(errors)
+
+    if db.query(Challenge).filter(Challenge.title == title).first():
+        raise HTTPException(status_code=409, detail=f"A Challenge titled {title!r} already exists.")
+    clash = db.query(Challenge).filter(Challenge.repo_name == repo_name).first()
+    if clash:
+        raise HTTPException(
+            status_code=409,
+            detail=f"The title gives the repo name {repo_name!r}, already used by the Challenge {clash.title!r}.",
+        )
+
+    challenge_id = uuid.uuid4()
+    inputs_key = public_key("challenges", str(challenge_id), "inputs.jsonl")
+    ground_truth_key = private_key("challenges", str(challenge_id), "ground_truth.jsonl")
+    media_archive_key = (
+        public_key("challenges", str(challenge_id), "media.zip") if media_archive is not None else None
     )
+    uploads = [
+        (inputs_key, inputs_file.file, "application/jsonl"),
+        (ground_truth_key, ground_truth_file.file, "application/jsonl"),
+    ]
+    if media_archive is not None:
+        uploads.append((media_archive_key, media_archive, "application/zip"))
+    stored: List[str] = []
+    try:
+        for key, body, content_type in uploads:
+            body.seek(0)
+            storage.put(key, body, content_type=content_type)
+            stored.append(key)
+
+        challenge = Challenge(
+            id=challenge_id,
+            title=title,
+            category_id=category_id,
+            image_uri=image_uri or None,
+            description=description,
+            status=challenge_status or "active",
+            created_by=current_user.id,
+            scorer_name=validated.scorer["name"],
+            scorer_label=validated.scorer["label"],
+            direction=validated.scorer["direction"],
+            scorer_params=validated.params,
+            package_version=scorer_catalogue.PACKAGE_VERSION,
+            inputs_key=inputs_key,
+            media_archive_key=media_archive_key,
+            ground_truth_key=ground_truth_key,
+            repo_name=repo_name,
+            sync_status=SYNC_PENDING,
+            sync_attempts=0,
+        )
+        db.add(challenge)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        _delete_quietly(storage, stored)
+        raise HTTPException(status_code=409, detail=f"A Challenge titled {title!r} already exists.")
+    except Exception:
+        db.rollback()
+        _delete_quietly(storage, stored)
+        raise
+    db.refresh(challenge)
+    return challenge
+
+
+def _delete_quietly(storage: ObjectStorage, keys: List[str]) -> None:
+    for key in keys:
+        try:
+            storage.delete(key)
+        except Exception:
+            logging.exception("Could not delete %s after a failed create", key)
 
 # for updating a challenge
 

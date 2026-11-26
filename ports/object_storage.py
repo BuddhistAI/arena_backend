@@ -87,8 +87,9 @@ class S3ObjectStorage:
     the existing upload code (``AWS_ACCESS_KEY_ID``, ``AWS_SECRET_ACCESS_KEY``,
     ``AWS_REGION``, ``S3_BUCKET_NAME``, optional ``CLOUDFRONT_DOMAIN``).
 
-    The bucket policy must grant public read on ``PUBLIC_PREFIX`` only; the
-    policy in ``CRUD/s3_utils.py`` grants it on the whole bucket.
+    The bucket policy must grant public read on ``PUBLIC_PREFIX`` only, as
+    ``CRUD.s3_utils.get_s3_bucket_policy_json`` and
+    ``scripts/configure_s3_public_access.sh`` do.
     """
 
     def __init__(self, bucket: str, client=None) -> None:

@@ -2,6 +2,7 @@
 S3 Utilities for improved URL generation and public access configuration.
 """
 
+import json
 import os
 import logging
 from typing import Optional
@@ -38,26 +39,33 @@ def generate_public_s3_url(s3_key: str, use_cloudfront: bool = True) -> str:
 
 def get_s3_bucket_policy_json(bucket_name: str) -> str:
     """
-    Generate the JSON bucket policy for public read access.
-    
+    The bucket policy: public read on the public prefix (``evalai/public/``)
+    only. Everything else, in particular the private Ground Truth prefix
+    (``evalai/private/``), stays readable only with the backend's credentials.
+
     Args:
         bucket_name: Name of the S3 bucket
-        
+
     Returns:
         JSON string of the bucket policy
     """
-    return f'''{{
-  "Version": "2012-10-17",
-  "Statement": [
-    {{
-      "Sid": "PublicReadGetObject",
-      "Effect": "Allow",
-      "Principal": "*",
-      "Action": "s3:GetObject",
-      "Resource": "arn:aws:s3:::{bucket_name}/*"
-    }}
-  ]
-}}'''
+    from ports.object_storage import PUBLIC_PREFIX
+
+    return json.dumps(
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "PublicReadPublicPrefixOnly",
+                    "Effect": "Allow",
+                    "Principal": "*",
+                    "Action": "s3:GetObject",
+                    "Resource": f"arn:aws:s3:::{bucket_name}/{PUBLIC_PREFIX}*",
+                }
+            ],
+        },
+        indent=2,
+    )
 
 
 def get_cors_configuration() -> list:
@@ -136,7 +144,7 @@ AWS_CLI_COMMANDS = """
 # 1. Remove public access block
 aws s3api delete-public-access-block --bucket YOUR_BUCKET_NAME
 
-# 2. Apply bucket policy for public read access
+# 2. Apply bucket policy: public read on evalai/public/ only (see get_s3_bucket_policy_json)
 aws s3api put-bucket-policy --bucket YOUR_BUCKET_NAME --policy file://bucket-policy.json
 
 # 3. Set CORS configuration
@@ -162,11 +170,12 @@ resource "aws_s3_bucket_policy" "example" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid       = "PublicReadGetObject"
+        Sid       = "PublicReadPublicPrefixOnly"
         Effect    = "Allow"
         Principal = "*"
         Action    = "s3:GetObject"
-        Resource  = "${aws_s3_bucket.example.arn}/*"
+        # Public prefix only: evalai/private/ (Ground Truth) must stay private.
+        Resource  = "${aws_s3_bucket.example.arn}/evalai/public/*"
       },
     ]
   })
