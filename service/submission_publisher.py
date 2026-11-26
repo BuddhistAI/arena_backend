@@ -19,9 +19,11 @@ import pyewts
 
 from models.submission import Submission, SubmissionType
 from ports.object_storage import ObjectStorage
+from service.skill_zip import METADATA_FILE, skill_files
 
 SCHEMA_VERSION = 1
-SUBMISSION_JSON = "submission.json"
+SUBMISSION_JSON = METADATA_FILE
+PROMPT_FILE = "prompt.md"
 SHORT_ID_LENGTH = 8
 SLUG_MAX_LENGTH = 60
 
@@ -40,8 +42,20 @@ def _no_artifact(submission: Submission, storage: ObjectStorage) -> Dict[str, by
     return {}
 
 
+def _prompt_file(submission: Submission, storage: ObjectStorage) -> Dict[str, bytes]:
+    """A Prompt, typed or uploaded, is stored and published as ``prompt.md``."""
+    return {PROMPT_FILE: storage.get(submission.artifact_url)}
+
+
+def _skill_files(submission: Submission, storage: ObjectStorage) -> Dict[str, bytes]:
+    """A Skill is published as its zip's files, never as the zip."""
+    return skill_files(storage.get(submission.artifact_url))
+
+
 ARTIFACT_FILES: Dict[SubmissionType, ArtifactFiles] = {
     SubmissionType.MODEL: _no_artifact,
+    SubmissionType.PROMPT: _prompt_file,
+    SubmissionType.SKILL: _skill_files,
 }
 
 _wylie = pyewts.pyewts()

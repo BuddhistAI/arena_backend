@@ -3,6 +3,7 @@ Preferred Model id and a license. The zip is published to a public repo
 later, so it only gets safety checks (size, entry count, paths, symlinks,
 file types); any layout is accepted, and it is scored like any Submission."""
 
+import contextlib
 import io
 import os
 import stat
@@ -176,6 +177,47 @@ def test_a_dot_dot_path_is_rejected_naming_it(client, headers_for, participant, 
     [error] = assert_rejected(response)
     assert name in error["message"]
     assert "'..' paths" in error["message"]
+
+
+@pytest.mark.parametrize("first, second", [("skill/a.md", "skill/a.md"), ("skill/a.md", "skill\\a.md")])
+def test_two_entries_publishing_to_the_same_path_are_rejected_naming_it(
+    client, headers_for, participant, challenge, assert_rejected, first, second
+):
+    """Entries are published at their path (``\\`` read as ``/``), so two with
+    the same path would overwrite each other; the second is named."""
+    with pytest.warns(UserWarning) if first == second else contextlib.nullcontext():
+        skill_zip = make_zip(("skill/SKILL.md", "# OCR"), (first, "one"), (second, "two"))
+
+    response = submit_skill(client, headers_for(participant), challenge, skill_zip=skill_zip)
+
+    [error] = assert_rejected(response)
+    assert (error["field"], error["message"]) == ("skill_file", f"'{second}': appears more than once in the zip")
+
+
+def test_a_submission_json_at_the_top_of_the_zip_is_rejected(
+    client, headers_for, participant, challenge, assert_rejected
+):
+    """``submission.json`` at the top of the Skill's folder is the arena's
+    metadata, so the zip may not supply its own; deeper ones are fine."""
+    skill_zip = make_zip(("skill/submission.json", "{}"), ("submission.json", "{}"))
+
+    response = submit_skill(client, headers_for(participant), challenge, skill_zip=skill_zip)
+
+    [error] = assert_rejected(response)
+    assert error["message"] == "'submission.json': is reserved for the Submission's metadata"
+
+
+def test_a_file_that_is_also_a_folder_of_another_entry_is_rejected(
+    client, headers_for, participant, challenge, assert_rejected
+):
+    """A repo cannot hold a file and a folder at one path, so ``notes.md``
+    next to ``notes.md/more.md`` is refused, naming the nested entry."""
+    skill_zip = make_zip(("skill/notes.md", "# Notes"), ("skill/notes.md/more.md", "# More"))
+
+    response = submit_skill(client, headers_for(participant), challenge, skill_zip=skill_zip)
+
+    [error] = assert_rejected(response)
+    assert error["message"] == "'skill/notes.md/more.md': is inside 'skill/notes.md', which is a file"
 
 
 def test_a_zip_with_more_than_200_entries_is_rejected(client, headers_for, participant, challenge, assert_rejected):

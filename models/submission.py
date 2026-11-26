@@ -71,5 +71,6 @@ class Submission(Base):
         self.sync_status = SyncStatus.PENDING
 
     def record_failed_sync(self) -> None:
-        """Its Challenge's sync ran out of attempts before publishing it."""
+        """Its folder could not be published: its Challenge's sync ran out of
+        attempts, or its Artifact is missing from storage."""
         self.sync_status = SyncStatus.FAILED

@@ -17,7 +17,9 @@ Submissions ride on their Challenge's sync: scoring a Submission queues its
 Challenge, and every attempt publishes the folder of each scored Submission
 (``service.submission_publisher``). A successful attempt marks each of them
 ``synced`` with its ``repo_path``; when the Challenge's attempts run out, the
-scored Submissions still ``pending`` become ``failed`` until a Resync.
+scored Submissions still ``pending`` become ``failed`` until a Resync. A
+Submission whose Artifact is missing from storage is left out of the tree and
+marked ``failed`` at once, without failing its Challenge's sync.
 
 Sync is one way: nothing is read back from the repo host. Each attempt
 creates the repo from the template if it is missing and replaces the repo's
@@ -39,7 +41,7 @@ from models.challenge import Challenge, SyncStatus
 from models.submission import Submission, SubmissionStatus
 from models.user import User
 from ports.clock import Clock, utc_now
-from ports.object_storage import ObjectStorage
+from ports.object_storage import ObjectNotFound, ObjectStorage
 from ports.repo_host import RepoAlreadyExists, RepoHost, RepoNotFound
 from service.challenge_publisher import MAX_COMMITTED_INPUTS_BYTES, challenge_files
 from service.submission_publisher import PublishedSubmission, is_publishable, submission_files
@@ -188,7 +190,8 @@ class SyncWorker:
 
     def _published_submissions(self, challenge: Challenge) -> List[Tuple[Submission, PublishedSubmission]]:
         """The Challenge's scored Submissions of a publishable type, oldest
-        first, each with its folder."""
+        first, each with its folder. A Submission whose Artifact is missing
+        from storage is left out and marked ``failed``; the others publish."""
         rows = (
             object_session(challenge)
             .query(Submission, User.username)
@@ -197,13 +200,20 @@ class SyncWorker:
             .order_by(Submission.created_at, Submission.id)
             .all()
         )
-        return [
-            (submission, submission_files(
-                submission, submitter=username, scorer_name=challenge.scorer_name, storage=self.storage
-            ))
-            for submission, username in rows
-            if is_publishable(submission.type)
-        ]
+        published = []
+        for submission, username in rows:
+            if not is_publishable(submission.type):
+                continue
+            try:
+                files = submission_files(
+                    submission, submitter=username, scorer_name=challenge.scorer_name, storage=self.storage
+                )
+            except ObjectNotFound as exc:
+                submission.record_failed_sync()
+                logger.warning("Submission %s left out of the sync: Artifact %s is missing", submission.id, exc)
+                continue
+            published.append((submission, files))
+        return published
 
 
 def _describe(exc: Exception) -> str:
