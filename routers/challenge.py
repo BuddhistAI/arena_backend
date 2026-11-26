@@ -10,13 +10,13 @@ from database import get_db
 from schemas.challenge import ChallengeRead, ChallengeWithCategoryRead
 from uuid import UUID
 from sqlalchemy.orm import joinedload
-from auth import get_current_active_user, require_admin
+from auth import require_admin
 import io
 import logging
 import re
 import unicodedata
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from models.challenge import SYNC_PENDING
 from ports.object_storage import ObjectStorage, get_object_storage, private_key, public_key
 from service import scorer_catalogue
@@ -37,13 +37,33 @@ router = APIRouter(prefix="/challenges", tags=["challenges"])
 db_dependency = Annotated[Session, Depends(get_db)]
 
 
+def _live_challenges(db: Session):
+    """Challenges that are not deleted: a deleted Challenge is a tombstone the
+    arena no longer shows (see ``Challenge.deleted_at``)."""
+    return db.query(Challenge).filter(Challenge.deleted_at.is_(None))
+
+
+def _live_challenge_or_404(db: Session, challenge_id: UUID) -> Challenge:
+    challenge = _live_challenges(db).filter(Challenge.id == challenge_id).one_or_none()
+    if challenge is None:
+        raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
+    return challenge
+
+
+def _queue_sync(challenge: Challenge) -> None:
+    """Leave the Challenge to the Sync Worker with a fresh round of attempts."""
+    challenge.sync_status = SYNC_PENDING
+    challenge.sync_attempts = 0
+    challenge.last_sync_error = None
+
+
 # for listing all challenges
 
 @router.get("/list", response_model=List[ChallengeWithCategoryRead])
 async def list_challenges_with_category(db: db_dependency):
     try:
         # Eager load the category relationship
-        challenges = db.query(Challenge).options(joinedload(Challenge.category)).all()
+        challenges = _live_challenges(db).options(joinedload(Challenge.category)).all()
         return challenges
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -53,10 +73,7 @@ async def list_challenges_with_category(db: db_dependency):
 
 @router.get("/{challenge_id}", response_model=ChallengeRead)
 async def get_challenge(db: db_dependency, challenge_id: UUID = Path(..., description="This is the ID of the challenge")):
-    challenge = db.query(Challenge).filter(Challenge.id == challenge_id).first()
-    if not challenge:
-        raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
-    return challenge
+    return _live_challenge_or_404(db, challenge_id)
 
 # for creating a challenge
 
@@ -248,9 +265,7 @@ def update_challenge(
     Locked. Title, description and image stay editable. Any accepted change
     sets sync status to ``pending`` so the Sync Worker re-publishes the repo.
     """
-    challenge = db.get(Challenge, challenge_id)
-    if challenge is None:
-        raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
+    challenge = _live_challenge_or_404(db, challenge_id)
 
     sent = {
         name: value
@@ -319,9 +334,7 @@ def update_challenge(
         challenge.scorer_params = validated.params
         challenge.package_version = scorer_catalogue.PACKAGE_VERSION
     # New content, so a fresh round of sync attempts.
-    challenge.sync_status = SYNC_PENDING
-    challenge.sync_attempts = 0
-    challenge.last_sync_error = None
+    _queue_sync(challenge)
     try:
         db.commit()
     except IntegrityError:
@@ -383,66 +396,36 @@ def _put(storage: ObjectStorage, key: str, body, content_type: str) -> None:
 
 # for deleting a challenge
 
-@router.delete("/remove/{challenge_id}", status_code=status.HTTP_200_OK)
-async def delete_challenge(
-    db: db_dependency, 
-    current_user: User = Depends(get_current_active_user),
-    challenge_id: UUID = Path(..., description="This is the ID of the challenge to delete")
+@router.delete(
+    "/remove/{challenge_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete a challenge",
+    responses={403: {"description": "The signed-in user is not an admin."}},
+)
+def delete_challenge(
+    db: db_dependency,
+    current_user: User = Depends(require_admin),
+    challenge_id: UUID = Path(..., description="This is the ID of the challenge to delete"),
 ):
     """
-    Delete a challenge by ID and return confirmation.
-    
-    Authorization rules:
-    - Admin users can delete any challenge
-    - Non-admin users can only delete challenges they created
-    
-    Returns a confirmation message with details about the deleted challenge.
+    Delete a Challenge (admin only). It disappears from the arena at once and
+    the Sync Worker archives its repo, which stays on GitHub read-only. The row
+    is kept as a tombstone, so the repo name is never reused.
     """
-    try:
-        logging.info(f"Attempting to delete challenge: {challenge_id}")
-        
-        challenge = db.query(Challenge).filter(Challenge.id == challenge_id).first()
-        if not challenge:
-            logging.warning(f"Challenge not found for deletion: {challenge_id}")
-            raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
-        
-        # Check authorization: admin can delete any challenge, non-admin can only delete their own
-        if current_user.role != 'admin' and challenge.created_by != current_user.id:
-            logging.warning(f"User {current_user.id} attempted to delete challenge {challenge_id} owned by {challenge.created_by}")
-            raise HTTPException(status_code=403, detail="You can only delete challenges you created")
-        
-        # Check if there are submissions referencing this challenge
-        related_submissions = db.query(models.Submission).filter(models.Submission.challenge_id == challenge_id).all()
-        if related_submissions:
-            submission_count = len(related_submissions)
-            logging.warning(f"Cannot delete challenge {challenge_id}: {submission_count} submissions reference it")
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Cannot delete challenge. There are {submission_count} submission(s) that reference this challenge. Please delete all related submissions first."
-            )
-        
-        challenge_title = challenge.title
-        challenge_created_at = challenge.created_at
-        
-        db.delete(challenge)
-        db.commit()
-        
-        logging.info(f"Challenge deleted successfully: {challenge_id} - {challenge_title}")
-        
-        return {
-            "message": "Challenge deleted successfully",
-            "deleted_challenge": {
-                "id": str(challenge_id),
-                "title": challenge_title,
-                "created_at": challenge_created_at.isoformat(),
-                "deleted_at": datetime.now().isoformat()
-            },
-            "status": "success"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logging.error(f"Unexpected error deleting challenge {challenge_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    challenge = _live_challenge_or_404(db, challenge_id)
+    deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    challenge.deleted_at = deleted_at
+    _queue_sync(challenge)
+    db.commit()
+    logging.info("Challenge %s (%s) deleted; its repo will be archived", challenge.id, challenge.repo_name)
+    return {
+        "message": "Challenge deleted; its repo will be archived",
+        "deleted_challenge": {
+            "id": str(challenge.id),
+            "title": challenge.title,
+            "repo_name": challenge.repo_name,
+            "created_at": challenge.created_at.isoformat(),
+            "deleted_at": deleted_at.isoformat(),
+        },
+        "status": "success",
+    }

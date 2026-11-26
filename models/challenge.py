@@ -60,6 +60,11 @@ class Challenge(Base):
     # Set when the first Submission arrives (RFC 2); the Lock.
     locked_at = Column(DateTime, nullable=True)
 
+    # Set when an admin deletes the Challenge. The row stays as a tombstone:
+    # the Sync Worker archives its repo, and its repo name is never reused.
+    # A deleted Challenge is gone from the arena's API.
+    deleted_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     updated_at = Column(DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
 

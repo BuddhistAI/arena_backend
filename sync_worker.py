@@ -10,6 +10,9 @@ Sync state lives on the Challenge row, so pending work survives a restart:
 - ``updated_at`` is set to the time of each failed attempt; the next attempt
   is due ``backoff * 2 ** (sync_attempts - 1)`` after it.
 
+A deleted Challenge (``deleted_at`` set) is queued the same way; its attempt
+archives the repo instead of publishing it.
+
 Sync is one way: nothing is read back from the repo host. Each attempt
 creates the repo from the template if it is missing and writes the
 publisher's whole file set in one commit, so a retry or a Resync rebuilds the
@@ -28,7 +31,7 @@ from sqlalchemy.orm import Session
 
 from models.challenge import SYNC_FAILED, SYNC_PENDING, SYNC_SYNCED, Challenge
 from ports.object_storage import ObjectStorage
-from ports.repo_host import RepoAlreadyExists, RepoHost
+from ports.repo_host import RepoAlreadyExists, RepoHost, RepoNotFound
 from service.challenge_publisher import MAX_COMMITTED_INPUTS_BYTES, challenge_files
 
 logger = logging.getLogger(__name__)
@@ -127,7 +130,10 @@ class SyncWorker:
 
     def _attempt(self, challenge: Challenge) -> None:
         try:
-            self._publish(challenge)
+            if challenge.deleted_at is not None:
+                self._archive(challenge)
+            else:
+                self._publish(challenge)
         except Exception as exc:
             challenge.sync_attempts = (challenge.sync_attempts or 0) + 1
             challenge.last_sync_error = _describe(exc)
@@ -143,7 +149,14 @@ class SyncWorker:
             challenge.sync_status = SYNC_SYNCED
             challenge.sync_attempts = 0
             challenge.last_sync_error = None
-            logger.info("Synced Challenge %s to %s", challenge.id, challenge.repo_name)
+            action = "Archived the repo of" if challenge.deleted_at is not None else "Synced"
+            logger.info("%s Challenge %s (%s)", action, challenge.id, challenge.repo_name)
+
+    def _archive(self, challenge: Challenge) -> None:
+        try:
+            self.repo_host.archive_repo(challenge.repo_name)
+        except RepoNotFound:
+            pass  # never published, so there is nothing to archive
 
     def _publish(self, challenge: Challenge) -> None:
         files = challenge_files(
