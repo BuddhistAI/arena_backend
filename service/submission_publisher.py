@@ -9,7 +9,6 @@ and its Artifact's files (``ARTIFACT_FILES``, one entry per Submission Type
 that can be published). The Predictions File is never among them.
 """
 
-import json
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -20,6 +19,7 @@ import pyewts
 
 from models.submission import Submission, SubmissionType
 from ports.object_storage import ObjectStorage
+from service.challenge_publisher import json_bytes
 from service.skill_zip import METADATA_FILE, skill_files
 
 SCHEMA_VERSION = 1
@@ -95,7 +95,7 @@ def submission_files(
     artifact = ARTIFACT_FILES[submission.type](submission, storage)
     metadata = submission_json(submission, submitter=submitter, scorer_name=scorer_name)
     files = {f"{folder}/{name}": content for name, content in artifact.items()}
-    files[f"{folder}/{SUBMISSION_JSON}"] = _json_bytes(metadata)
+    files[f"{folder}/{SUBMISSION_JSON}"] = json_bytes(metadata)
     return PublishedSubmission(folder=folder, files=files)
 
 
@@ -169,7 +169,3 @@ def submission_json(submission: Submission, *, submitter: str, scorer_name: str)
 def _utc_timestamp(moment: Optional[datetime]) -> Optional[str]:
     """ISO 8601 with a ``Z``; the arena stores naive UTC."""
     return None if moment is None else moment.replace(tzinfo=None).isoformat() + "Z"
-
-
-def _json_bytes(value: Any) -> bytes:
-    return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")

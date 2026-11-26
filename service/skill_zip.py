@@ -89,7 +89,8 @@ def _capped(problems: List[ZipProblem]) -> List[ZipProblem]:
     """The first ``MAX_REPORTED_PROBLEMS``, then one saying how many more."""
     if len(problems) <= MAX_REPORTED_PROBLEMS:
         return problems
-    return problems[:MAX_REPORTED_PROBLEMS] + [ZipProblem(unlisted_problems(len(problems) - MAX_REPORTED_PROBLEMS))]
+    unlisted = ZipProblem(unlisted_problems(len(problems) - MAX_REPORTED_PROBLEMS))
+    return problems[:MAX_REPORTED_PROBLEMS] + [unlisted]
 
 
 def skill_files(data: bytes) -> Dict[str, bytes]:

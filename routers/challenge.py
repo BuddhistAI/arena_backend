@@ -28,11 +28,11 @@ from service.challenge_data import (
     MEDIA_ARCHIVE_FIELD,
     SCORER_NAME_FIELD,
     SCORER_PARAMS_FIELD,
-    ChallengeDataError,
     InvalidChallengeData,
     media_archive_size_limit,
     validate_challenge_data,
 )
+from service.form_errors import FormError
 
 # Constants
 CHALLENGE_NOT_FOUND_MESSAGE = "Challenge not found"
@@ -129,7 +129,7 @@ def repo_name_for(title: str, challenge_id: uuid.UUID) -> str:
     return f"challenge-{slug or challenge_id.hex[:8]}"
 
 
-def _invalid(errors: List[ChallengeDataError]) -> JSONResponse:
+def _invalid(errors: List[FormError]) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
@@ -173,7 +173,7 @@ def create_new_challenge(
     Sync Worker publishes its Challenge Repo later.
     """
     title = title.strip()
-    errors: List[ChallengeDataError] = []
+    errors: List[FormError] = []
     _existing_category_id(db, category_id, errors)
 
     media_archive = media_archive_file.file if media_archive_file is not None else None
@@ -379,7 +379,7 @@ def update_challenge(
             ),
         )
 
-    errors: List[ChallengeDataError] = []
+    errors: List[FormError] = []
     if "category_id" in requested_changes:
         requested_changes["category_id"] = _existing_category_id(db, requested_changes["category_id"], errors)
     validated = None
@@ -443,16 +443,16 @@ def _same_params(challenge: Challenge, raw: str) -> bool:
         return False
 
 
-def _existing_category_id(db: Session, value, errors: List[ChallengeDataError]) -> Optional[UUID]:
+def _existing_category_id(db: Session, value, errors: List[FormError]) -> Optional[UUID]:
     """The category id (a UUID or its text), or None after recording in
     ``errors`` why it names no category."""
     try:
         category_id = value if isinstance(value, UUID) else UUID(value)
     except ValueError:
-        errors.append(ChallengeDataError("category_id", f"{value!r} is not a UUID"))
+        errors.append(FormError("category_id", f"{value!r} is not a UUID"))
         return None
     if db.get(models.Category, category_id) is None:
-        errors.append(ChallengeDataError("category_id", f"no category with id {category_id}"))
+        errors.append(FormError("category_id", f"no category with id {category_id}"))
     return category_id
 
 

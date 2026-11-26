@@ -10,7 +10,7 @@
 user already stored today's limit on the Challenge (``service.daily_limit``).
 It runs every other check before it stores anything. If any check fails it
 raises ``SubmissionRejected``, whose ``errors`` list every problem found (each
-a ``SubmissionError`` naming the form field, and the line or Input id when
+a ``FormError`` naming the form field, and the line or Input id when
 known); nothing is stored, nothing is counted and the Challenge is not Locked.
 Otherwise it stores the Predictions File and the Artifact (a Prompt as
 markdown, a Skill as the zip uploaded) privately, saves the Submission as
@@ -45,7 +45,7 @@ from ports.object_storage import ObjectStorage, private_key
 from service import scorer_catalogue
 from service.challenge_data import MAX_REPORTED_ERRORS, line_of
 from service.daily_limit import check_daily_limit
-from service.form_errors import unlisted_problems
+from service.form_errors import FormError, capped, id_mismatch_errors
 from service.skill_zip import check_skill_zip
 from submission_worker import SubmissionQueue, SubmissionTask
 
@@ -87,28 +87,10 @@ class SubmissionForm:
     skill_file: Optional[bytes] = None
 
 
-@dataclass(frozen=True)
-class SubmissionError:
-    """One problem with a Submission.
-
-    ``field`` is the multipart form field it concerns; ``line`` (1-based) and
-    ``id`` are set when the problem is tied to a row or an Input id.
-    """
-
-    field: str
-    message: str
-    line: Optional[int] = None
-    id: Optional[str] = None
-
-    def to_dict(self) -> dict:
-        """The error as JSON for the API response."""
-        return asdict(self)
-
-
 class SubmissionRejected(ValueError):
     """The Submission was refused and nothing stored. ``errors`` lists why."""
 
-    def __init__(self, errors: List[SubmissionError]) -> None:
+    def __init__(self, errors: List[FormError]) -> None:
         self.errors = list(errors)
         super().__init__("; ".join(f"{e.field}: {e.message}" for e in self.errors))
 
@@ -122,7 +104,7 @@ class Candidate:
     storage: ObjectStorage
 
 
-Rule = Callable[[Candidate], List[SubmissionError]]
+Rule = Callable[[Candidate], List[FormError]]
 """A check on a Candidate, returning the problems it finds (none if it passes)."""
 
 @dataclass
@@ -295,7 +277,7 @@ def _type_intake(submission_type: str) -> TypeIntake:
         known = SubmissionType(submission_type)
     except ValueError:
         choices = ", ".join(t.value for t in SubmissionType)
-        raise SubmissionRejected([SubmissionError(TYPE_FIELD, f"must be one of {choices}")]) from None
+        raise SubmissionRejected([FormError(TYPE_FIELD, f"must be one of {choices}")]) from None
     return TYPE_INTAKES[known]
 
 
@@ -304,10 +286,10 @@ def _pipeline(type_intake: TypeIntake) -> Tuple[Rule, ...]:
 
 
 def _required(field: str) -> Rule:
-    def rule(candidate: Candidate) -> List[SubmissionError]:
+    def rule(candidate: Candidate) -> List[FormError]:
         if getattr(candidate.form, field):
             return []
-        return [SubmissionError(field, "is required")]
+        return [FormError(field, "is required")]
 
     return rule
 
@@ -315,63 +297,50 @@ def _required(field: str) -> Rule:
 def _not_accepted(field_name: str, submission_type: SubmissionType) -> Rule:
     message = f"is not accepted for {submission_type.value.capitalize()} Submissions"
 
-    def rule(candidate: Candidate) -> List[SubmissionError]:
+    def rule(candidate: Candidate) -> List[FormError]:
         if getattr(candidate.form, field_name) is None:
             return []
-        return [SubmissionError(field_name, message)]
+        return [FormError(field_name, message)]
 
     return rule
 
 
-def _check_predictions(candidate: Candidate) -> List[SubmissionError]:
+def _check_predictions(candidate: Candidate) -> List[FormError]:
     """One Prediction per Input id, each matching the Scorer's Prediction schema."""
     challenge = candidate.challenge
     try:
         predictions = scorer_catalogue.load_predictions(candidate.form.predictions)
     except scorer_catalogue.ScorerError as exc:
-        return [SubmissionError(PREDICTIONS_FIELD, str(exc), line=line_of(exc))]
+        return [FormError(PREDICTIONS_FIELD, str(exc), line=line_of(exc))]
     inputs = scorer_catalogue.load_inputs(candidate.storage.get(challenge.inputs_key))
     try:
         scorer_catalogue.validate_predictions(challenge.scorer_name, inputs, predictions)
     except scorer_catalogue.IdMismatchError as exc:
-        return _id_mismatch_errors(exc)
+        errors = id_mismatch_errors(
+            exc,
+            PREDICTIONS_FIELD,
+            missing="Input id {id!r} has no Prediction",
+            extra="Prediction id {id!r} is not an Input id",
+        )
+        return capped(errors, MAX_REPORTED_ERRORS)
     except scorer_catalogue.ScorerError:
         return _errors_per_id(challenge.scorer_name, inputs, predictions)
     return []
 
 
-def _id_mismatch_errors(exc: scorer_catalogue.IdMismatchError) -> List[SubmissionError]:
-    missing = [
-        SubmissionError(PREDICTIONS_FIELD, f"Input id {i!r} has no Prediction", id=i) for i in exc.missing_ids
-    ]
-    extra = [
-        SubmissionError(PREDICTIONS_FIELD, f"Prediction id {i!r} is not an Input id", id=i)
-        for i in exc.extra_ids
-    ]
-    return _capped(missing + extra)
-
-
-def _errors_per_id(scorer_name: str, inputs: dict, predictions: dict) -> List[SubmissionError]:
+def _errors_per_id(scorer_name: str, inputs: dict, predictions: dict) -> List[FormError]:
     """The Scorer stops at the first bad Prediction; check each id on its own
     so every bad one is reported with its id (up to MAX_REPORTED_ERRORS)."""
-    errors: List[SubmissionError] = []
+    errors: List[FormError] = []
     for row_id, prediction in predictions.items():
         try:
             scorer_catalogue.validate_predictions(scorer_name, {row_id: inputs[row_id]}, {row_id: prediction})
         except scorer_catalogue.ScorerError as exc:
-            errors.append(SubmissionError(PREDICTIONS_FIELD, str(exc), id=row_id))
-    return _capped(errors)
+            errors.append(FormError(PREDICTIONS_FIELD, str(exc), id=row_id))
+    return capped(errors, MAX_REPORTED_ERRORS)
 
 
-def _capped(errors: List[SubmissionError]) -> List[SubmissionError]:
-    """The first ``MAX_REPORTED_ERRORS``, then one on the same field saying how many more."""
-    if len(errors) <= MAX_REPORTED_ERRORS:
-        return errors
-    unlisted = SubmissionError(errors[0].field, unlisted_problems(len(errors) - MAX_REPORTED_ERRORS))
-    return errors[:MAX_REPORTED_ERRORS] + [unlisted]
-
-
-def _check_model_link(candidate: Candidate) -> List[SubmissionError]:
+def _check_model_link(candidate: Candidate) -> List[FormError]:
     """A model link, when given, is an ``https`` URL with a host."""
     link = candidate.form.model_link
     if link is None:
@@ -379,40 +348,40 @@ def _check_model_link(candidate: Candidate) -> List[SubmissionError]:
     parsed = urlparse(link)
     if parsed.scheme == "https" and parsed.netloc:
         return []
-    return [SubmissionError(MODEL_LINK_FIELD, f"must be an https:// link (got {link!r})")]
+    return [FormError(MODEL_LINK_FIELD, f"must be an https:// link (got {link!r})")]
 
 
-def _check_license(candidate: Candidate) -> List[SubmissionError]:
+def _check_license(candidate: Candidate) -> List[FormError]:
     """A license, when given, is one of the offered SPDX ids, exactly."""
     license_id = candidate.form.license
     if license_id is None or license_id in LICENSES:
         return []
-    return [SubmissionError(LICENSE_FIELD, f"must be one of {', '.join(LICENSES)} (got {license_id!r})")]
+    return [FormError(LICENSE_FIELD, f"must be one of {', '.join(LICENSES)} (got {license_id!r})")]
 
 
-def _check_prompt(candidate: Candidate) -> List[SubmissionError]:
+def _check_prompt(candidate: Candidate) -> List[FormError]:
     """Exactly one of a typed prompt or a prompt file, and a file is UTF-8
     text. The prompt's content is otherwise not checked."""
     form = candidate.form
     if form.prompt_file is None:
         if form.prompt_text is None:
-            return [SubmissionError(PROMPT_TEXT_FIELD, "is required: type the prompt or upload it as a file")]
+            return [FormError(PROMPT_TEXT_FIELD, "is required: type the prompt or upload it as a file")]
         return []
     if form.prompt_text is not None:
-        return [SubmissionError(PROMPT_FILE_FIELD, "type the prompt or upload it as a file, not both")]
+        return [FormError(PROMPT_FILE_FIELD, "type the prompt or upload it as a file, not both")]
     try:
         form.prompt_file.decode("utf-8")
     except UnicodeDecodeError:
-        return [SubmissionError(PROMPT_FILE_FIELD, "must be a UTF-8 text file")]
+        return [FormError(PROMPT_FILE_FIELD, "must be a UTF-8 text file")]
     return []
 
 
-def _check_skill_zip(candidate: Candidate) -> List[SubmissionError]:
+def _check_skill_zip(candidate: Candidate) -> List[FormError]:
     """A Skill zip is given and passes every safety check; its layout is free."""
     skill_file = candidate.form.skill_file
     if skill_file is None:
-        return [SubmissionError(SKILL_FILE_FIELD, "is required")]
-    return [SubmissionError(SKILL_FILE_FIELD, problem.message) for problem in check_skill_zip(skill_file)]
+        return [FormError(SKILL_FILE_FIELD, "is required")]
+    return [FormError(SKILL_FILE_FIELD, problem.message) for problem in check_skill_zip(skill_file)]
 
 
 def _model_columns(db: Session, user: User, form: SubmissionForm, stash: Stash) -> TypeColumns:
