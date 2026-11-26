@@ -31,7 +31,8 @@ from routers import (
     template_v2, 
     translate_v2, 
     arena_ranking,
-    text_category
+    text_category,
+    scorer,
 )
 
 # Templates setup
@@ -184,6 +185,7 @@ app.include_router(template_v2.router)
 app.include_router(translate_v2.router)
 app.include_router(arena_ranking.router)
 app.include_router(text_category.router)
+app.include_router(scorer.router)
 
 
 if __name__ == "__main__":
