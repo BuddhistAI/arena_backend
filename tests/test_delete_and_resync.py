@@ -125,11 +125,58 @@ def test_a_non_admin_cannot_resync_a_challenge(
     assert read(client, challenge)["sync_status"] == "failed"
 
 
-def test_a_deleted_challenge_cannot_be_resynced(client, admin_headers, category, sync_worker):
+def admin_list(client, headers):
+    return client.get("/challenges/admin/list", headers=headers)
+
+
+def test_a_failed_archive_is_shown_to_admins_and_retried_by_a_resync(
+    client, admin_headers, category, repo_host, sync_worker
+):
+    challenge = created(create_challenge(client, admin_headers, category, title="Tibetan OCR"))
+    sync_worker.drain()
+    delete(client, challenge, admin_headers)
+    repo_host.fail_next(5, "GitHub is down")
+    sync_worker.drain()
+
+    response = admin_list(client, admin_headers)
+    assert response.status_code == 200, response.text
+    [listed] = response.json()
+    assert listed["id"] == challenge["id"]
+    assert listed["deleted_at"] is not None
+    assert listed["sync_status"] == "failed"
+    assert "GitHub is down" in listed["last_sync_error"]
+    assert repo_host.repos["challenge-tibetan-ocr"].archived is False
+
+    response = resync(client, challenge, admin_headers)
+    assert response.status_code == 200, response.text
+    sync_worker.drain()
+
+    assert repo_host.repos["challenge-tibetan-ocr"].archived is True
+    [archived] = admin_list(client, admin_headers).json()
+    assert (archived["sync_status"], archived["last_sync_error"]) == ("synced", None)
+    assert challenge["id"] not in listed_ids(client)
+
+
+def test_admins_read_a_deleted_challenge_that_the_arena_no_longer_shows(
+    client, admin_headers, category, sync_worker
+):
     challenge = created(create_challenge(client, admin_headers, category, title="Tibetan OCR"))
     delete(client, challenge, admin_headers)
 
-    assert resync(client, challenge, admin_headers).status_code == 404
+    response = client.get(f"/challenges/admin/{challenge['id']}", headers=admin_headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["title"] == "Tibetan OCR"
+    assert response.json()["deleted_at"] is not None
+    assert client.get(f"/challenges/{challenge['id']}").status_code == 404
+
+
+def test_only_admins_see_the_admin_view_of_challenges(client, admin_headers, user_headers, category):
+    challenge = created(create_challenge(client, admin_headers, category, title="Tibetan OCR"))
+
+    assert admin_list(client, user_headers).status_code == 403
+    assert client.get(f"/challenges/admin/{challenge['id']}", headers=user_headers).status_code == 403
+    assert client.get("/challenges/admin/list").status_code in (401, 403)
 
 
 def test_a_resync_rebuilds_the_repo_and_drops_files_added_on_github(

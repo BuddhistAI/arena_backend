@@ -51,3 +51,11 @@ class ChallengeWithCategoryRead(ChallengeRead):
 
     class Config:
         from_attributes = True
+
+
+class ChallengeAdminRead(ChallengeWithCategoryRead):
+    """Admin view of a Challenge, deleted ones included: the public view plus
+    the storage keys, the last sync error and the deletion time."""
+
+    ground_truth_key: str
+    deleted_at: Optional[datetime.datetime] = None

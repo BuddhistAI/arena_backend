@@ -7,7 +7,7 @@ import models
 from models import Challenge
 from models.user import User
 from database import get_db
-from schemas.challenge import ChallengeRead, ChallengeWithCategoryRead
+from schemas.challenge import ChallengeAdminRead, ChallengeRead, ChallengeWithCategoryRead
 from uuid import UUID
 from sqlalchemy.orm import joinedload
 from auth import require_admin
@@ -50,6 +50,14 @@ def _live_challenge_or_404(db: Session, challenge_id: UUID) -> Challenge:
     return challenge
 
 
+def _challenge_or_404(db: Session, challenge_id: UUID) -> Challenge:
+    """Any Challenge, deleted ones included: for admin reads and Resync."""
+    challenge = db.get(Challenge, challenge_id)
+    if challenge is None:
+        raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
+    return challenge
+
+
 def _queue_sync(challenge: Challenge) -> None:
     """Leave the Challenge to the Sync Worker with a fresh round of attempts."""
     challenge.sync_status = SYNC_PENDING
@@ -67,6 +75,39 @@ async def list_challenges_with_category(db: db_dependency):
         return challenges
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# for admins: every Challenge, deleted ones included, with its sync state
+
+@router.get(
+    "/admin/list",
+    response_model=List[ChallengeAdminRead],
+    summary="List every challenge, deleted ones included (admin)",
+    responses={403: {"description": "The signed-in user is not an admin."}},
+)
+def admin_list_challenges(db: db_dependency, current_user: User = Depends(require_admin)):
+    """Every Challenge with its storage keys, sync status and last sync error,
+    including deleted ones (whose repo archiving may have failed)."""
+    return (
+        db.query(Challenge)
+        .options(joinedload(Challenge.category))
+        .order_by(Challenge.created_at)
+        .all()
+    )
+
+
+@router.get(
+    "/admin/{challenge_id}",
+    response_model=ChallengeAdminRead,
+    summary="Read a challenge, even a deleted one (admin)",
+    responses={403: {"description": "The signed-in user is not an admin."}},
+)
+def admin_get_challenge(
+    db: db_dependency,
+    current_user: User = Depends(require_admin),
+    challenge_id: UUID = Path(..., description="This is the ID of the challenge"),
+):
+    return _challenge_or_404(db, challenge_id)
 
 
 # for getting a specific challenge
@@ -413,9 +454,10 @@ def resync_challenge(
     status to ``pending``. The Sync Worker then rebuilds the repo entirely from
     the arena's data, creating it if it is missing and replacing every file,
     so edits made directly on GitHub are overwritten. Typically used after a
-    sync ``failed`` once its cause (``last_sync_error``) is fixed.
+    sync ``failed`` once its cause (``last_sync_error``) is fixed. On a
+    deleted Challenge it retries archiving the repo instead.
     """
-    challenge = _live_challenge_or_404(db, challenge_id)
+    challenge = _challenge_or_404(db, challenge_id)
     _queue_sync(challenge)
     db.commit()
     db.refresh(challenge)
