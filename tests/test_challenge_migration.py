@@ -151,4 +151,7 @@ def test_downgrade_from_head_restores_the_previous_submission_table(legacy_datab
 
     columns = {c["name"] for c in inspect(database.engine).get_columns("submission")}
     assert "dataset_url" in columns
-    assert not columns & {"type", "name", "model_link", "predictions_url", "headline_metric", "score_details"}
+    assert not columns & {
+        "type", "name", "model_link", "predictions_url", "headline_metric", "score_details",
+        "repo_path", "sync_status",
+    }
