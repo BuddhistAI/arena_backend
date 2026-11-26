@@ -13,7 +13,7 @@ class LeaderboardRowRead(BaseModel):
     """One ranked Submission on a Leaderboard."""
 
     submission_id: uuid.UUID
-    rank: int = Field(..., description="Position by Headline Metric in the Scorer's Direction; unique per row")
+    rank: int = Field(..., description="Rank by Headline Metric in the Scorer's Direction, the earlier Submission first on a tie; unique per row")
     type: SubmissionType = Field(..., description="Submission Type: model, prompt or skill")
     name: str = Field(..., description="Name of the Submission; for a Model, the model name")
     submitter: str = Field(..., description="The submitter's current public username")
@@ -22,7 +22,10 @@ class LeaderboardRowRead(BaseModel):
     preferred_model: Optional[str] = Field(
         None, description="Prompt and Skill: the model it was run with; null for a Model"
     )
-    has_download: bool = Field(..., description="Whether the Artifact can be downloaded (Prompt and Skill)")
+    download_url: Optional[str] = Field(
+        None,
+        description="Prompt and Skill: where to download the Artifact, relative to the API root; null for a Model",
+    )
 
     class Config:
         from_attributes = True
@@ -34,7 +37,7 @@ class LeaderboardScorerRead(BaseModel):
     name: str
     label: str = Field(..., description="Heads the Headline Metric's column")
     direction: Direction
-    format: DisplayFormat = Field(..., description="How to show the Headline Metric")
+    display_format: DisplayFormat = Field(..., description="How to show the Headline Metric")
     public_summary: List[PublicSummaryEntry] = Field(
         ..., description="The aggregate numbers a Submission's detail shows, in order"
     )
@@ -58,6 +61,9 @@ class LeaderboardRead(BaseModel):
 
     scorer: LeaderboardScorerRead
     counts: LeaderboardCounts
+    total: int = Field(
+        ..., description="Rows the type filter and search show, on all pages together; the last page holds the last"
+    )
     page: int = Field(..., description="This page's number, from 1")
     limit: int = Field(..., description="Rows per page, after the cap")
     rows: List[LeaderboardRowRead]

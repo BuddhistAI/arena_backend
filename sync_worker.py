@@ -215,7 +215,7 @@ class SyncWorker:
             try:
                 files = submission_files(
                     submission,
-                    submitter=submission.published_submitter or username,
+                    submitter=submission.submitter_to_publish(username),
                     scorer_name=challenge.scorer_name,
                     storage=self.storage,
                     taken_folders={folder.folder for _, folder in published},

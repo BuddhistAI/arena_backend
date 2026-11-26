@@ -13,7 +13,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
-from typing import AbstractSet, Any, Callable, Dict, Optional
+from typing import AbstractSet, Any, Callable, Dict, Iterable, Optional
 
 import pyewts
 
@@ -114,6 +114,26 @@ def submission_folder(submission: Submission, taken_folders: AbstractSet[str] = 
     """
     short = _folder_with_id(submission, str(submission.id)[:SHORT_ID_LENGTH])
     return _folder_with_id(submission, str(submission.id)) if short in taken_folders else short
+
+
+def folder_among(submission: Submission, published_in_order: Iterable[Submission]) -> str:
+    """The folder a sync gives ``submission``: each Submission takes its folder
+    in publishing order, so ``taken_folders`` is every earlier one's.
+
+    Args:
+        submission: The Submission to name the folder of.
+        published_in_order: The Challenge's scored, live Submissions, oldest
+            first, as the Sync Worker publishes them; ``submission`` among them.
+
+    Returns:
+        The folder's path in the Challenge Repo.
+    """
+    taken: set[str] = set()
+    for earlier in published_in_order:
+        if earlier.id == submission.id:
+            break
+        taken.add(submission_folder(earlier, taken))
+    return submission_folder(submission, taken)
 
 
 def _folder_with_id(submission: Submission, shown_id: str) -> str:

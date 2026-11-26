@@ -16,7 +16,7 @@ from __future__ import annotations
 import datetime
 import uuid
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import List, Optional
 
 from sqlalchemy import Select, Subquery, func, or_, select
 from sqlalchemy.orm import Session
@@ -25,6 +25,7 @@ from models import Challenge, Submission, User
 from models.challenge import Direction
 from models.submission import SubmissionStatus, SubmissionType
 from service import scorer_catalogue
+from service.submission_download import download_path
 
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
@@ -48,9 +49,9 @@ class LeaderboardRow:
     preferred_model: Optional[str]
 
     @property
-    def has_download(self) -> bool:
-        """Prompts and Skills can be downloaded; a Model is found at its own host."""
-        return self.type != SubmissionType.MODEL
+    def download_url(self) -> Optional[str]:
+        """Where the row's Artifact downloads from, as its detail says; None for a Model."""
+        return download_path(self.submission_id, self.type)
 
 
 @dataclass(frozen=True)
@@ -61,9 +62,19 @@ class LeaderboardScorer:
 
     name: str
     label: str
-    direction: str
-    format: dict[str, Any]
-    public_summary: List[dict[str, Any]]
+    direction: Direction
+    display_format: scorer_catalogue.DisplayFormat
+    public_summary: List[scorer_catalogue.SummaryEntry]
+
+
+@dataclass(frozen=True)
+class LeaderboardCounts:
+    """Rows of the whole Leaderboard, in all and per Submission Type."""
+
+    all: int
+    model: int
+    prompt: int
+    skill: int
 
 
 @dataclass(frozen=True)
@@ -71,7 +82,8 @@ class Leaderboard:
     """One page of a Challenge's Leaderboard."""
 
     scorer: LeaderboardScorer
-    counts: dict[str, int]
+    counts: LeaderboardCounts
+    total: int
     page: int
     limit: int
     rows: List[LeaderboardRow]
@@ -99,7 +111,8 @@ def read_leaderboard(
 
     Returns:
         The Scorer block; how many rows the whole Leaderboard holds, in all
-        and per Submission Type, whatever the filter, search and page; the
+        and per Submission Type, whatever the filter, search and page; how
+        many rows the filter and search show on all pages together; the
         page and page size used; and that page's rows in Rank order.
 
     Raises:
@@ -123,10 +136,12 @@ def read_leaderboard(
                 ranked.c.preferred_model.icontains(text, autoescape=True),
             )
         )
+    total = db.execute(select(func.count()).select_from(shown.subquery())).scalar_one()
     shown = shown.order_by(ranked.c.rank).offset((page - 1) * limit).limit(limit)
     return Leaderboard(
-        scorer=_scorer(challenge),
+        scorer=read_scorer(challenge),
         counts=_counts(db, ranked),
+        total=total,
         page=page,
         limit=limit,
         rows=[LeaderboardRow(**row) for row in db.execute(shown).mappings()],
@@ -150,28 +165,29 @@ def read_rank(db: Session, submission: Submission) -> Optional[int]:
     ).scalar_one_or_none()
 
 
-def read_scorer(challenge: Challenge) -> LeaderboardScorer:
-    """The Scorer block of the Challenge's Leaderboard: what its Submissions
-    are ranked by and how their numbers are shown."""
-    return _scorer(challenge)
-
-
-def _counts(db: Session, ranked: Subquery) -> dict[str, int]:
+def _counts(db: Session, ranked: Subquery) -> LeaderboardCounts:
     """Rows of the whole Leaderboard, in all and per Submission Type."""
     per_type = dict(db.execute(select(ranked.c.type, func.count()).group_by(ranked.c.type)).all())
     counts = {kind.value: per_type.get(kind, 0) for kind in SubmissionType}
-    return {"all": sum(counts.values()), **counts}
+    return LeaderboardCounts(all=sum(counts.values()), **counts)
 
 
-def _scorer(challenge: Challenge) -> LeaderboardScorer:
-    # Read live from the registry: a Scorer name never changes meaning (ADR 0001).
-    described = scorer_catalogue.describe_scorer(challenge.scorer_name)
+def read_scorer(challenge: Challenge) -> LeaderboardScorer:
+    """The Scorer block of the Challenge's Leaderboard, read live from the
+    registry: a Scorer name never changes meaning (ADR 0001).
+
+    Args:
+        challenge: The Challenge whose Scorer to describe.
+
+    Returns:
+        What its Submissions are ranked by and how their numbers are shown.
+    """
     return LeaderboardScorer(
         name=challenge.scorer_name,
         label=challenge.scorer_label,
-        direction=challenge.direction,
-        format=described["display_format"],
-        public_summary=described["public_summary"],
+        direction=Direction(challenge.direction),
+        display_format=scorer_catalogue.display_format(challenge.scorer_name),
+        public_summary=scorer_catalogue.public_summary(challenge.scorer_name),
     )
 
 

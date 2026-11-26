@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from models import Submission
 from models.submission import SubmissionStatus, SubmissionType
 from ports.object_storage import ObjectStorage
-from service.submission_publisher import submission_folder
+from service.submission_publisher import folder_among
 
 DOWNLOAD_EXPIRY_SECONDS = 5 * 60
 
@@ -33,10 +33,29 @@ class DownloadNotFound(Exception):
     """No scored, live Prompt or Skill has that id."""
 
 
+def is_downloadable(submission_type: SubmissionType) -> bool:
+    """Prompts and Skills can be downloaded; a Model is found at its own host.
+
+    Args:
+        submission_type: The Submission Type.
+
+    Returns:
+        Whether a Submission of that type has a download.
+    """
+    return submission_type in DOWNLOAD_EXTENSIONS
+
+
 def download_path(submission_id: uuid.UUID, submission_type: SubmissionType) -> Optional[str]:
-    """The API path a Submission downloads from, relative to the API root;
-    None for a Model."""
-    if submission_type not in DOWNLOAD_EXTENSIONS:
+    """The API path a Submission downloads from.
+
+    Args:
+        submission_id: The Submission.
+        submission_type: Its Submission Type.
+
+    Returns:
+        The path, relative to the API root; None for a Model.
+    """
+    if not is_downloadable(submission_type):
         return None
     return f"/submissions/{submission_id}/download"
 
@@ -60,7 +79,7 @@ def presigned_download_url(db: Session, storage: ObjectStorage, submission_id: u
     submission = db.get(Submission, submission_id)
     if (
         submission is None
-        or submission.type not in DOWNLOAD_EXTENSIONS
+        or not is_downloadable(submission.type)
         or not submission.is_live
         or submission.status != SubmissionStatus.COMPLETED
     ):
@@ -68,13 +87,22 @@ def presigned_download_url(db: Session, storage: ObjectStorage, submission_id: u
     return storage.presigned_download_url(
         submission.artifact_url,
         expires_in_seconds=DOWNLOAD_EXPIRY_SECONDS,
-        file_name=_file_name(submission),
+        file_name=_file_name(db, submission),
     )
 
 
-def _file_name(submission: Submission) -> str:
-    """``<slug>-<id>`` of the Submission's repo folder, plus its extension.
-    A synced Submission keeps the folder it was published in; one not synced
-    yet takes the folder the publisher would give it."""
-    folder = submission.repo_path or submission_folder(submission)
+def _file_name(db: Session, submission: Submission) -> str:
+    """``<slug>-<id>`` of the Submission's repo folder, plus its extension:
+    the folder the Sync Worker writes, allocated the way it allocates them,
+    so the name is the same before the sync as after."""
+    published_in_order = (
+        db.query(Submission)
+        .filter(
+            Submission.challenge_id == submission.challenge_id,
+            Submission.status == SubmissionStatus.COMPLETED,
+            Submission.is_live,
+        )
+        .order_by(Submission.created_at, Submission.id)
+    )
+    folder = folder_among(submission, published_in_order)
     return PurePosixPath(folder).name + DOWNLOAD_EXTENSIONS[submission.type]

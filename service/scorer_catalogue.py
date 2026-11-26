@@ -17,11 +17,13 @@ and a bad Reference or Input apart; their messages name the line or ids.
 from __future__ import annotations
 
 import io
-from typing import Any, Mapping
+from typing import Any, List, Mapping
 
 import buddhist_eval
 from buddhist_eval import (
     BuddhistEvalError as ScorerError,
+    DisplayFormat,
+    DisplayStyle,
     IdMismatchError,
     InvalidInputError,
     InvalidParameterError,
@@ -29,6 +31,7 @@ from buddhist_eval import (
     InvalidReferenceError,
     MalformedJsonlError,
     ScoreResult,
+    SummaryEntry,
     UnknownScorerError,
 )
 
@@ -43,8 +46,13 @@ __all__ = [
     "MalformedJsonlError",
     "UnknownScorerError",
     "ScoreResult",
+    "DisplayFormat",
+    "DisplayStyle",
+    "SummaryEntry",
     "list_scorers",
     "describe_scorer",
+    "display_format",
+    "public_summary",
     "summarise",
     "validate_params",
     "validate_ground_truth",
@@ -80,6 +88,36 @@ def describe_scorer(name: str) -> dict[str, Any]:
         UnknownScorerError: If no Scorer has that name.
     """
     return buddhist_eval.get_scorer(name).describe()
+
+
+def display_format(name: str) -> DisplayFormat:
+    """How a Scorer's Headline Metric is shown.
+
+    Args:
+        name: The Scorer's name.
+
+    Returns:
+        Its display format: a style and a number of decimals.
+
+    Raises:
+        UnknownScorerError: If no Scorer has that name.
+    """
+    return buddhist_eval.get_scorer(name).display_format
+
+
+def public_summary(name: str) -> List[SummaryEntry]:
+    """The aggregate numbers a Scorer lets the public see, as it declares them.
+
+    Args:
+        name: The Scorer's name.
+
+    Returns:
+        Its Public Summary entries, in declaration order.
+
+    Raises:
+        UnknownScorerError: If no Scorer has that name.
+    """
+    return list(buddhist_eval.get_scorer(name).public_summary)
 
 
 def summarise(name: str, details: Mapping[str, Any]) -> list[dict[str, Any]]:

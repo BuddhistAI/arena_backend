@@ -218,14 +218,15 @@ def test_a_model_row_shows_its_type_name_submitter_and_no_preferred_model_or_dow
     assert row["submitter"] == "participant"
     assert row["created_at"].startswith("2026-11-20T08:15")
     assert row["preferred_model"] is None
-    assert row["has_download"] is False
+    assert row["download_url"] is None
 
 
 @pytest.mark.parametrize("submit_fn, submission_type", [(submit_prompt, "prompt"), (submit_skill, "skill")])
 def test_a_prompt_or_skill_row_shows_its_preferred_model_and_offers_a_download(
     client, headers_for, participant, challenge, submission_worker, clock, submit_fn, submission_type
 ):
-    """A Prompt or Skill row carries its type, the model it ran on and a download."""
+    """A Prompt or Skill row carries its type, the model it ran on and where
+    it downloads from, the same ``download_url`` its detail has."""
     submit_scored(
         client, headers_for(participant), challenge, submission_worker, clock,
         submit_fn=submit_fn, preferred_model="claude-opus-4-1",
@@ -235,7 +236,8 @@ def test_a_prompt_or_skill_row_shows_its_preferred_model_and_offers_a_download(
 
     assert row["type"] == submission_type
     assert row["preferred_model"] == "claude-opus-4-1"
-    assert row["has_download"] is True
+    assert row["download_url"] == f"/submissions/{row['submission_id']}/download"
+    assert client.get(row["download_url"], follow_redirects=False).status_code == 307
 
 
 def test_a_row_credits_the_submitters_current_username_and_never_their_email_or_id(
@@ -264,7 +266,7 @@ def test_the_leaderboard_names_its_scorer_and_how_to_show_its_numbers(client, ch
         "name": "cer",
         "label": "Character Error Rate (CER)",
         "direction": "lower_is_better",
-        "format": {"style": "percent", "decimals": 2},
+        "display_format": {"style": "percent", "decimals": 2},
         "public_summary": [
             {"key": "corpus", "label": "Corpus CER", "format": {"style": "percent", "decimals": 2}}
         ],
@@ -280,7 +282,7 @@ def test_a_higher_is_better_scorer_is_described_with_its_own_direction_and_forma
     scorer = leaderboard(client, mcq_challenge(client, admin_headers, category))["scorer"]
 
     assert (scorer["name"], scorer["direction"]) == ("mcq_accuracy", "higher_is_better")
-    assert scorer["format"] == {"style": "percent", "decimals": 1}
+    assert scorer["display_format"] == {"style": "percent", "decimals": 1}
     assert [entry["key"] for entry in scorer["public_summary"]] == ["n_correct", "n_total"]
 
 
@@ -437,3 +439,17 @@ def test_counts_leave_out_unscored_and_deleted_submissions(
     submit_skill(client, headers, challenge)
 
     assert leaderboard(client, challenge)["counts"] == {"all": 1, "model": 1, "prompt": 0, "skill": 0}
+
+
+@pytest.mark.parametrize(
+    "params, expected_total",
+    [({}, 5), ({"type": "prompt"}, 2), ({"q": "claude"}, 2), ({"type": "skill", "q": "ocr"}, 1), ({"q": "none"}, 0),
+     ({"page": 3, "limit": 2}, 5)],
+    ids=["all", "type filter", "search", "both", "no match", "paging"],
+)
+def test_total_counts_the_rows_the_filter_and_search_show_across_every_page(
+    client, challenge, mixed_board, params, expected_total
+):
+    """``total`` is how many rows match the type filter and search on all
+    pages together, so a reader knows which page is the last."""
+    assert leaderboard(client, challenge, **params)["total"] == expected_total

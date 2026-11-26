@@ -422,12 +422,14 @@ def test_model_submissions_with_the_same_name_share_one_model(
 def test_the_status_endpoint_reports_the_score_once_completed(
     client, headers_for, participant, challenge, submission_worker
 ):
-    """Polling ``/status`` shows ``pending`` until scored, then the Headline Metric."""
-    submission_id = submit(client, headers_for(participant), challenge).json()["id"]
-    before = client.get(f"/submissions/{submission_id}/status").json()
+    """Polling ``/status`` shows the submitter ``pending`` until scored, then
+    the Headline Metric."""
+    headers = headers_for(participant)
+    submission_id = submit(client, headers, challenge).json()["id"]
+    before = client.get(f"/submissions/{submission_id}/status", headers=headers).json()
 
     submission_worker.drain()
-    after = client.get(f"/submissions/{submission_id}/status").json()
+    after = client.get(f"/submissions/{submission_id}/status", headers=headers).json()
 
     assert (before["status"], before["headline_metric"]) == ("pending", None)
     assert (after["status"], after["headline_metric"]) == ("completed", 0.0)

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models.submission import SubmissionType
 from schemas.leaderboard import LeaderboardRead
-from service.leaderboard import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, ChallengeNotFound, read_leaderboard
+from service.leaderboard import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, ChallengeNotFound, Leaderboard, read_leaderboard
 
 router = APIRouter(prefix="/challenges", tags=["leaderboard"])
 
@@ -28,7 +28,7 @@ def get_leaderboard(
     limit: int = Query(
         DEFAULT_PAGE_SIZE, ge=1, description=f"Rows per page; at most {MAX_PAGE_SIZE} are returned"
     ),
-):
+) -> Leaderboard:
     """The Challenge's scored Submissions, ranked by Headline Metric in the
     Scorer's Direction, the earlier Submission first on a tie."""
     try:
