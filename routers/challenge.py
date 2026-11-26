@@ -1,7 +1,8 @@
 from fastapi import APIRouter, status, HTTPException, Depends, Path, Form, File, UploadFile
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
-from typing import Annotated, List, Optional
+from dataclasses import dataclass
+from typing import Annotated, Dict, Iterable, List, Optional
 from sqlalchemy.orm import Session
 import models
 from models import Challenge
@@ -22,6 +23,9 @@ from models.challenge import SYNC_PENDING
 from ports.object_storage import ObjectStorage, get_object_storage, private_key, public_key
 from service import scorer_catalogue
 from service.challenge_data import (
+    GROUND_TRUTH_FIELD,
+    INPUTS_FIELD,
+    MEDIA_ARCHIVE_FIELD,
     ChallengeDataError,
     InvalidChallengeData,
     media_archive_size_limit,
@@ -204,64 +208,100 @@ def create_new_challenge(
             detail=f"The title gives the repo name {repo_name!r}, already used by the Challenge {clash.title!r}.",
         )
 
-    inputs_key = public_key("challenges", str(challenge_id), "inputs.jsonl")
-    ground_truth_key = private_key("challenges", str(challenge_id), "ground_truth.jsonl")
-    media_archive_key = (
-        public_key("challenges", str(challenge_id), "media.zip") if media_archive is not None else None
+    keys = _store_uploads(storage, challenge_id, {
+        INPUTS_FIELD: inputs_file.file,
+        GROUND_TRUTH_FIELD: ground_truth_file.file,
+        MEDIA_ARCHIVE_FIELD: media_archive,
+    })
+    challenge = Challenge(
+        id=challenge_id,
+        title=title,
+        category_id=category_id,
+        image_uri=image_uri or None,
+        description=description,
+        status=challenge_status or "active",
+        created_by=current_user.id,
+        scorer_name=validated.scorer["name"],
+        scorer_label=validated.scorer["label"],
+        direction=validated.scorer["direction"],
+        scorer_params=validated.params,
+        package_version=scorer_catalogue.PACKAGE_VERSION,
+        repo_name=repo_name,
+        sync_status=SYNC_PENDING,
+        sync_attempts=0,
+        **keys,
     )
-    uploads = [
-        (inputs_key, inputs_file.file, "application/jsonl"),
-        (ground_truth_key, ground_truth_file.file, "application/jsonl"),
-    ]
-    if media_archive is not None:
-        uploads.append((media_archive_key, media_archive, "application/zip"))
-    stored: List[str] = []
-    try:
-        for key, body, content_type in uploads:
-            body.seek(0)
-            storage.put(key, body, content_type=content_type)
-            stored.append(key)
-
-        challenge = Challenge(
-            id=challenge_id,
-            title=title,
-            category_id=category_id,
-            image_uri=image_uri or None,
-            description=description,
-            status=challenge_status or "active",
-            created_by=current_user.id,
-            scorer_name=validated.scorer["name"],
-            scorer_label=validated.scorer["label"],
-            direction=validated.scorer["direction"],
-            scorer_params=validated.params,
-            package_version=scorer_catalogue.PACKAGE_VERSION,
-            inputs_key=inputs_key,
-            media_archive_key=media_archive_key,
-            ground_truth_key=ground_truth_key,
-            repo_name=repo_name,
-            sync_status=SYNC_PENDING,
-            sync_attempts=0,
-        )
-        db.add(challenge)
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        _delete_quietly(storage, stored)
-        raise HTTPException(status_code=409, detail=f"A Challenge titled {title!r} already exists.")
-    except Exception:
-        db.rollback()
-        _delete_quietly(storage, stored)
-        raise
+    db.add(challenge)
+    _commit_or_discard(db, storage, keys.values(), title)
     db.refresh(challenge)
     return challenge
 
 
-def _delete_quietly(storage: ObjectStorage, keys: List[str]) -> None:
-    for key in keys:
+@dataclass(frozen=True)
+class _StoredFile:
+    """An uploaded file: its form field, the Challenge column holding its
+    storage key, its object name and whether it is public."""
+
+    field: str
+    column: str
+    filename: str
+    content_type: str
+    public: bool
+
+
+STORED_FILES = (
+    _StoredFile(INPUTS_FIELD, "inputs_key", "inputs.jsonl", "application/jsonl", public=True),
+    _StoredFile(GROUND_TRUTH_FIELD, "ground_truth_key", "ground_truth.jsonl", "application/jsonl", public=False),
+    _StoredFile(MEDIA_ARCHIVE_FIELD, "media_archive_key", "media.zip", "application/zip", public=True),
+)
+
+
+def _new_key(challenge_id: UUID, stored: _StoredFile) -> str:
+    """``challenges/<id>/<upload id>/<file name>`` under the public or private
+    prefix. Every upload gets a new key, so a replacement never overwrites an
+    object the database still points at."""
+    make_key = public_key if stored.public else private_key
+    return make_key("challenges", str(challenge_id), uuid.uuid4().hex, stored.filename)
+
+
+def _store_uploads(storage: ObjectStorage, challenge_id: UUID, uploads: dict) -> Dict[str, str]:
+    """Put each upload (form field -> file object, None for none) under a new
+    key and return Challenge column -> key. If one put fails, the objects
+    already stored are deleted."""
+    keys: Dict[str, str] = {}
+    try:
+        for stored in STORED_FILES:
+            if uploads.get(stored.field) is not None:
+                key = _new_key(challenge_id, stored)
+                _put(storage, key, uploads[stored.field], stored.content_type)
+                keys[stored.column] = key
+    except Exception:
+        _delete_quietly(storage, keys.values())
+        raise
+    return keys
+
+
+def _commit_or_discard(db: Session, storage: ObjectStorage, new_keys: Iterable[str], title: Optional[str]) -> None:
+    """Commit; if that fails, delete the objects just stored for it, which no
+    row points at."""
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        _delete_quietly(storage, new_keys)
+        raise HTTPException(status_code=409, detail=f"A Challenge titled {title!r} already exists.")
+    except Exception:
+        db.rollback()
+        _delete_quietly(storage, new_keys)
+        raise
+
+
+def _delete_quietly(storage: ObjectStorage, keys: Iterable[str]) -> None:
+    for key in list(keys):
         try:
             storage.delete(key)
         except Exception:
-            logging.exception("Could not delete %s after a failed create", key)
+            logging.exception("Could not delete the unused object %s", key)
 
 # for editing a challenge
 
@@ -357,16 +397,15 @@ def update_challenge(
     ).first():
         raise HTTPException(status_code=409, detail=f"A Challenge titled {sent['title']!r} already exists.")
 
-    # Files are written over the existing keys so public URLs stay stable.
-    if "inputs_file" in sent:
-        _put(storage, challenge.inputs_key, inputs_file.file, "application/jsonl")
-    if "ground_truth_file" in sent:
-        _put(storage, challenge.ground_truth_key, ground_truth_file.file, "application/jsonl")
-    if "media_archive_file" in sent:
-        challenge.media_archive_key = challenge.media_archive_key or public_key(
-            "challenges", str(challenge.id), "media.zip"
-        )
-        _put(storage, challenge.media_archive_key, media_archive_file.file, "application/zip")
+    # Replacements go under new keys and the row points at them only once
+    # committed, so a failed edit never leaves new files with an old Scorer.
+    # The replaced objects are deleted after the commit.
+    keys = _store_uploads(storage, challenge.id, {
+        stored.field: sent[stored.field].file for stored in STORED_FILES if stored.field in sent
+    })
+    replaced = [getattr(challenge, column) for column in keys if getattr(challenge, column)]
+    for column, key in keys.items():
+        setattr(challenge, column, key)
 
     for name in ("title", "category_id", "image_uri", "description", "status"):
         if name in sent:
@@ -379,11 +418,8 @@ def update_challenge(
         challenge.package_version = scorer_catalogue.PACKAGE_VERSION
     # New content, so a fresh round of sync attempts.
     _queue_sync(challenge)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=409, detail=f"A Challenge titled {sent.get('title')!r} already exists.")
+    _commit_or_discard(db, storage, keys.values(), sent.get("title"))
+    _delete_quietly(storage, replaced)
     db.refresh(challenge)
     return challenge
 

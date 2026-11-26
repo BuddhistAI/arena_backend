@@ -2,6 +2,7 @@
 parameters. Data and Scorer edits are re-validated like a create and are
 refused once the Challenge is Locked (its first Submission arrived)."""
 
+import contextlib
 import datetime
 
 import pytest
@@ -260,9 +261,50 @@ def test_before_the_lock_admin_switches_scorer_with_new_data_and_gets_its_defaul
     assert edited["scorer_params"] == {"iou_threshold": 0.5}  # not the CER language
     assert edited["sync_status"] == "pending"
     assert storage.objects[edited["inputs_key"]] == inputs
-    assert edited["inputs_key"] == challenge["inputs_key"]  # same public URL
-    [private_key] = [key for key in storage.objects if key.startswith("evalai/private/")]
-    assert storage.objects[private_key] == ground_truth
+    assert storage.objects[edited["ground_truth_key"]] == ground_truth
+    # Replacements go under new keys; the replaced objects are deleted.
+    assert set(storage.objects) == {edited["inputs_key"], edited["ground_truth_key"]}
+    assert challenge["inputs_key"] not in storage.objects
+
+
+@contextlib.contextmanager
+def commits_failing():
+    """Every database commit fails meanwhile, as when the database goes away
+    in the middle of a request."""
+    from sqlalchemy import event
+
+    import database
+
+    def fail(session):
+        raise RuntimeError("the database went away")
+
+    event.listen(database.SessionLocal, "before_commit", fail)
+    try:
+        yield
+    finally:
+        event.remove(database.SessionLocal, "before_commit", fail)
+
+
+def test_an_edit_whose_commit_fails_leaves_the_old_files_referenced_and_intact(
+    client, admin_headers, challenge, storage
+):
+    stored_before = dict(storage.objects)
+
+    with commits_failing(), pytest.raises(RuntimeError):
+        edit_challenge(
+            client,
+            admin_headers,
+            challenge["id"],
+            data={"scorer_params": '{"language": "en"}'},
+            files={
+                "inputs_file": jsonl_file("inputs.jsonl", NEW_INPUTS),
+                "ground_truth_file": jsonl_file("ground_truth.jsonl", NEW_GROUND_TRUTH),
+                "media_archive_file": ("media.zip", zip_of("images/p1.png"), "application/zip"),
+            },
+        )
+
+    assert read(client, challenge) == challenge
+    assert storage.objects == stored_before
 
 
 def test_before_the_lock_admin_adds_a_media_archive_with_inputs_that_point_into_it(
