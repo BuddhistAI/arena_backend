@@ -7,7 +7,7 @@ from models.submission import SubmissionStatus
 from database import get_db
 from schemas.submission import SubmissionCreate, SubmissionRead, SubmissionCreatedResponse, SubmissionStatusResponse
 from CRUD.model import create_or_get_model
-from submission_worker import queue_submission_for_processing, get_queue_stats
+from submission_worker import get_queue_stats
 from submission_cache import (
     get_submission_progress, 
     set_submission_progress, 

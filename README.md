@@ -249,7 +249,6 @@ backend/
 ├── redis_client.py             # Redis caching client
 ├── submission_worker.py        # Background worker for submissions
 ├── submission_cache.py         # Submission progress caching
-├── background_tasks.py         # Background task management
 ├── requirements.txt            # Python dependencies
 ├── alembic.ini                 # Alembic configuration
 ├── .env                        # Environment variables (create this)
