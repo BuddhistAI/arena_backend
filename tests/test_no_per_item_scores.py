@@ -25,6 +25,7 @@ ENDPOINTS = [
     ("admin", "GET", "/submissions"),
     ("admin", "GET", "/submissions?challenge_id={challenge_id}"),
     ("admin", "POST", "/submissions/{id}/resync"),
+    ("anonymous", "GET", "/challenges/{challenge_id}/leaderboard"),
 ]
 
 

@@ -326,25 +326,3 @@ def test_a_page_or_page_size_below_one_is_refused(client, challenge, params):
 
     assert response.status_code == 422, response.text
 
-
-def test_the_leaderboard_returns_no_per_item_scores(
-    client, admin_headers, headers_for, participant, category, submission_worker
-):
-    """A ranked Submission's row holds no score details and names no Input,
-    so the Ground Truth cannot be pieced together from it."""
-    input_ids = ("folio-alpha", "folio-beta")
-    folios = create_challenge(
-        client, admin_headers, category,
-        inputs=jsonl(*({"id": input_id, "input": "x"} for input_id in input_ids)),
-        ground_truth=jsonl(*({"id": input_id, "reference": "ཀཁ"} for input_id in input_ids)),
-    ).json()
-    predictions = jsonl({"id": input_ids[0], "prediction": "ཀཁ"}, {"id": input_ids[1], "prediction": "ཀ"})
-    submission_id = submit(client, headers_for(participant), folios, predictions=predictions).json()["id"]
-    submission_worker.drain()
-
-    response = client.get(f"/challenges/{folios['id']}/leaderboard")
-
-    assert submission_id in response.text
-    assert "score_details" not in response.text
-    for input_id in input_ids:
-        assert input_id not in response.text
