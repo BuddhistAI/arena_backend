@@ -13,7 +13,7 @@ import zipfile
 import pytest
 
 from test_create_challenge import category, jsonl  # noqa: F401  (category is a fixture)
-from test_model_submission import assert_rejected, challenge, participant, read  # noqa: F401  (fixtures)
+from test_model_submission import assert_rejected, challenge, own, participant, read  # noqa: F401  (fixtures)
 
 
 def make_zip(*entries):
@@ -68,7 +68,7 @@ def test_a_skill_is_scored_end_to_end(client, headers_for, participant, challeng
     assert submission["type"] == "skill"
     assert submission["preferred_model"] == "claude-sonnet-4-5"
     assert submission["license"] == "MIT"
-    assert submission["model_id"] is None
+    assert own(client, headers_for(participant), response)["model_id"] is None
 
 
 def test_a_skill_zip_is_stored_privately_as_uploaded(client, headers_for, participant, challenge, storage):
@@ -84,7 +84,7 @@ def test_a_skill_zip_is_stored_privately_as_uploaded(client, headers_for, partic
     assert key.startswith(PRIVATE_PREFIX)
     assert storage.objects[key] == SKILL_ZIP
     assert storage.content_types[key] == "application/zip"
-    assert key not in str(read(client, submission_id))
+    assert key not in str(read(client, submission_id, headers_for(participant)))
 
 
 def test_a_skill_zip_with_any_layout_and_no_skill_md_is_scored(

@@ -109,6 +109,29 @@ def read_leaderboard(
     )
 
 
+def read_rank(db: Session, submission: Submission) -> Optional[int]:
+    """A Submission's Rank on its Challenge's Leaderboard, the same Rank the
+    Leaderboard shows it at.
+
+    Args:
+        db: Database session.
+        submission: The Submission.
+
+    Returns:
+        Its Rank, or None when it is not on the Leaderboard (not scored, or deleted).
+    """
+    ranked = _ranked(submission.challenge).subquery()
+    return db.execute(
+        select(ranked.c.rank).where(ranked.c.submission_id == submission.id)
+    ).scalar_one_or_none()
+
+
+def read_scorer(challenge: Challenge) -> LeaderboardScorer:
+    """The Scorer block of the Challenge's Leaderboard: what its Submissions
+    are ranked by and how their numbers are shown."""
+    return _scorer(challenge)
+
+
 def _scorer(challenge: Challenge) -> LeaderboardScorer:
     # Read live from the registry: a Scorer name never changes meaning (ADR 0001).
     described = scorer_catalogue.describe_scorer(challenge.scorer_name)
