@@ -112,6 +112,10 @@ class SubmissionDetailRead(BaseModel):
         None, description="The Submission's folder in the Challenge Repo on GitHub; null until synced"
     )
     prompt_text: Optional[str] = Field(None, description="Prompt only: the prompt's text, as submitted")
+    download_url: Optional[str] = Field(
+        None,
+        description="Prompt and Skill: where to download the Artifact, relative to the API root; null for a Model",
+    )
 
     class Config:
         from_attributes = True
