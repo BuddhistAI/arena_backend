@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from models import Submission
 from models.submission import SubmissionStatus, SubmissionType
 from ports.object_storage import ObjectStorage
-from service.submission_publisher import submission_folder
+from service.submission_publisher import folder_among
 
 DOWNLOAD_EXPIRY_SECONDS = 5 * 60
 
@@ -68,13 +68,22 @@ def presigned_download_url(db: Session, storage: ObjectStorage, submission_id: u
     return storage.presigned_download_url(
         submission.artifact_url,
         expires_in_seconds=DOWNLOAD_EXPIRY_SECONDS,
-        file_name=_file_name(submission),
+        file_name=_file_name(db, submission),
     )
 
 
-def _file_name(submission: Submission) -> str:
-    """``<slug>-<id>`` of the Submission's repo folder, plus its extension.
-    A synced Submission keeps the folder it was published in; one not synced
-    yet takes the folder the publisher would give it."""
-    folder = submission.repo_path or submission_folder(submission)
+def _file_name(db: Session, submission: Submission) -> str:
+    """``<slug>-<id>`` of the Submission's repo folder, plus its extension:
+    the folder the Sync Worker writes, allocated the way it allocates them,
+    so the name is the same before the sync as after."""
+    published_in_order = (
+        db.query(Submission)
+        .filter(
+            Submission.challenge_id == submission.challenge_id,
+            Submission.status == SubmissionStatus.COMPLETED,
+            Submission.is_live,
+        )
+        .order_by(Submission.created_at, Submission.id)
+    )
+    folder = folder_among(submission, published_in_order)
     return PurePosixPath(folder).name + DOWNLOAD_EXTENSIONS[submission.type]
