@@ -3,7 +3,8 @@
 ``submission_files`` is a function of the Submission row, its submitter's
 public username, the Challenge's Scorer name and the Submission's Artifact in
 storage, so a sync and a Resync produce the same folder. Every Submission
-gets one folder, ``<type folder>/<slug>-<id>``, holding ``submission.json``
+gets one folder, ``<type folder>/<slug>-<id>`` (the full id if an earlier
+Submission already has that folder), holding ``submission.json``
 and its Artifact's files (``ARTIFACT_FILES``, one entry per Submission Type
 that can be published). The Predictions File is never among them.
 """
@@ -13,7 +14,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Dict, Optional
+from typing import AbstractSet, Any, Callable, Dict, Optional
 
 import pyewts
 
@@ -83,7 +84,12 @@ def is_publishable(submission_type: str) -> bool:
 
 
 def submission_files(
-    submission: Submission, *, submitter: str, scorer_name: str, storage: ObjectStorage
+    submission: Submission,
+    *,
+    submitter: str,
+    scorer_name: str,
+    storage: ObjectStorage,
+    taken_folders: AbstractSet[str] = frozenset(),
 ) -> PublishedSubmission:
     """The folder and files that publish ``submission``.
 
@@ -92,11 +98,12 @@ def submission_files(
         submitter: The submitter's public username.
         scorer_name: The Scorer of the Submission's Challenge.
         storage: Where the Artifact is stored.
+        taken_folders: Folders of the Challenge's earlier Submissions.
 
     Returns:
         The folder, with ``submission.json`` and the Artifact's files in it.
     """
-    folder = submission_folder(submission)
+    folder = submission_folder(submission, taken_folders)
     artifact = ARTIFACT_FILES[SubmissionType(submission.type)](submission, storage)
     metadata = submission_json(submission, submitter=submitter, scorer_name=scorer_name)
     files = {f"{folder}/{name}": content for name, content in artifact.items()}
@@ -104,19 +111,25 @@ def submission_files(
     return PublishedSubmission(folder=folder, files=files)
 
 
-def submission_folder(submission: Submission) -> str:
+def submission_folder(submission: Submission, taken_folders: AbstractSet[str] = frozenset()) -> str:
     """``<type folder>/<slug>-<id>``, or ``<type folder>/<id>`` when the name
-    gives no slug; ``<id>`` is the first 8 characters of the Submission id.
+    gives no slug; ``<id>`` is the first 8 characters of the Submission id,
+    or the full id when that folder is already taken.
 
     Args:
         submission: The Submission to name the folder of.
+        taken_folders: Folders of the Challenge's earlier Submissions.
 
     Returns:
         The folder's path in the Challenge Repo.
     """
-    short_id = str(submission.id)[:SHORT_ID_LENGTH]
+    short = _folder_with_id(submission, str(submission.id)[:SHORT_ID_LENGTH])
+    return _folder_with_id(submission, str(submission.id)) if short in taken_folders else short
+
+
+def _folder_with_id(submission: Submission, shown_id: str) -> str:
     slug = folder_slug(submission.name)
-    name = f"{slug}-{short_id}" if slug else short_id
+    name = f"{slug}-{shown_id}" if slug else shown_id
     return f"{TYPE_FOLDERS[SubmissionType(submission.type)]}/{name}"
 
 

@@ -272,3 +272,28 @@ def test_a_submission_that_failed_scoring_cannot_be_resynced(
 
     assert refused.status_code == 409, refused.text
     assert "scored" in refused.json()["detail"]
+
+
+def test_a_later_submission_whose_folder_would_collide_uses_its_full_id(
+    client, clock, scored, repo_host, sync_worker, monkeypatch
+):
+    """Two Submissions whose folders would share a name never overwrite each
+    other: the later one's folder ends in its full id instead."""
+    import datetime
+    import uuid
+
+    # Same first 8 characters; the earlier one sorts after the later by id.
+    earlier = uuid.UUID("aaaaaaaa-ffff-4000-8000-000000000000")
+    later = uuid.UUID("aaaaaaaa-0000-4000-8000-000000000000")
+    ids = iter([earlier, later])
+    monkeypatch.setattr("service.submission_intake.new_submission_id", lambda: next(ids))
+    scored(name="Google Vision OCR")
+    clock.advance(datetime.timedelta(minutes=1))
+    scored(name="Google Vision OCR")
+
+    sync_worker.drain()
+
+    assert submission_folders(repo_host) == [
+        "models/google-vision-ocr-aaaaaaaa",
+        f"models/google-vision-ocr-{later}",
+    ]

@@ -62,6 +62,11 @@ LICENSES: Tuple[str, ...] = ("CC-BY-4.0", "CC0-1.0", "MIT", "Apache-2.0")
 """The licenses a Prompt or Skill may carry, as SPDX ids."""
 
 
+def new_submission_id() -> uuid.UUID:
+    """A fresh, random Submission id."""
+    return uuid.uuid4()
+
+
 @dataclass(frozen=True)
 class SubmissionForm:
     """What the participant sent: the form fields, the Artifact and the
@@ -211,7 +216,7 @@ class SubmissionIntake:
         """Store the Predictions File and the Artifact, then save the row and
         Lock the Challenge in one commit. If the commit fails the stored
         objects are deleted."""
-        submission_id = uuid.uuid4()
+        submission_id = new_submission_id()
         stash = Stash(storage=self.storage, submission_id=submission_id)
         key = stash.put("predictions.jsonl", form.predictions, content_type="application/jsonl")
         now = self.clock()

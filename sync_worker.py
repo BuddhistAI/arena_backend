@@ -214,7 +214,11 @@ class SyncWorker:
                 continue
             try:
                 files = submission_files(
-                    submission, submitter=username, scorer_name=challenge.scorer_name, storage=self.storage
+                    submission,
+                    submitter=username,
+                    scorer_name=challenge.scorer_name,
+                    storage=self.storage,
+                    taken_folders={folder.folder for _, folder in published},
                 )
             except ObjectNotFound as exc:
                 submission.record_failed_sync()
