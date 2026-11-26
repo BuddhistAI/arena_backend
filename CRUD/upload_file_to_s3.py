@@ -16,52 +16,6 @@ AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 
-def validate_json_structure(json_data: Dict[Any, Any]) -> Tuple[bool, str]:
-    """
-    Validate that the JSON contains required columns: 'Filename' and 'Inference'
-    
-    Args:
-        json_data: The parsed JSON data to validate
-        
-    Returns:
-        Tuple of (is_valid, error_message)
-    """
-    try:
-        # Check if it's a list of records or a single record
-        if isinstance(json_data, list):
-            if not json_data:
-                return False, "JSON file is empty"
-            # Check the first record for required columns
-            sample_record = json_data[0]
-        elif isinstance(json_data, dict):
-            sample_record = json_data
-        else:
-            return False, "JSON must be either a dictionary or a list of dictionaries"
-        
-        # Check for required columns
-        required_columns = ['filename', 'prediction']
-        missing_columns = []
-        
-        for column in required_columns:
-            if column not in sample_record:
-                missing_columns.append(column)
-        
-        if missing_columns:
-            return False, f"Missing required columns: {', '.join(missing_columns)}"
-        
-        # If it's a list, validate all records have the required columns
-        if isinstance(json_data, list):
-            for i, record in enumerate(json_data):
-                for column in required_columns:
-                    if column not in record:
-                        return False, f"Record {i+1} is missing required column: {column}"
-        
-        return True, "Validation successful"
-        
-    except Exception as e:
-        logger.error(f"Error during JSON validation: {str(e)}")
-        return False, f"Validation error: {str(e)}"
-
 async def simple_upload_to_s3(file: Any, filename: str, folder_path: str = "evalai/uploads") -> Tuple[bool, str, str]:
     """
     Simple S3 upload without any validation - used for testing and general file uploads.
