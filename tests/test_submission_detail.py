@@ -44,6 +44,17 @@ def test_a_visitor_reads_a_scored_model_submission_with_its_rank_and_submitter(
     assert submission["model_link"] == "https://example.org/ocr"
 
 
+
+def test_the_detail_shows_the_submitters_current_username_after_a_rename(
+    client, headers_for, participant, challenge, submission_worker, clock
+):
+    """A submitter who renames is shown under the new username."""
+    submission_id = submit_scored(client, headers_for(participant), challenge, submission_worker, clock)
+    response = client.patch("/users/me", json={"username": "tenzin"}, headers=headers_for(participant))
+    assert response.status_code == 200, response.text
+
+    assert detail(client, submission_id)["submitter"] == "tenzin"
+
 @pytest.mark.parametrize("who", ["anonymous", "submitter", "admin"])
 def test_the_detail_never_shows_the_submitters_email_or_user_id(
     client, headers_for, participant, challenge, submission_worker, clock, admin_headers, who
