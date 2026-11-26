@@ -50,6 +50,22 @@ async def list_my_submissions(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/preferred-models", response_model=List[str])
+def list_preferred_models(db: db_dependency) -> List[str]:
+    """List the Preferred Model ids already used, for the form's autocomplete.
+
+    Returns:
+        Each distinct Preferred Model id on any Challenge's Submissions, sorted.
+    """
+    rows = (
+        db.query(models.Submission.preferred_model)
+        .filter(models.Submission.preferred_model.isnot(None))
+        .distinct()
+        .order_by(models.Submission.preferred_model)
+        .all()
+    )
+    return [preferred_model for (preferred_model,) in rows]
+
 @router.get("/{submission_id}", response_model=SubmissionRead)
 async def get_submission(db: db_dependency, submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION)):
     submission = db.query(models.Submission).filter(models.Submission.id == submission_id).first()
