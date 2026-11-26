@@ -1,14 +1,18 @@
 import uuid
 import datetime
 from pydantic import BaseModel, Field
-from typing import Any, Dict, Optional
+from typing import List, Optional
 from enum import Enum
 
 from models.challenge import SyncStatus
 from models.submission import SubmissionType
+from schemas.scorer import PublicSummaryValue
 
 SUBMISSION_ID_DESCRIPTION = "ID of the submission"
 HEADLINE_METRIC_DESCRIPTION = "The Scorer's Headline Metric, unrounded; set once completed"
+PUBLIC_SUMMARY_DESCRIPTION = (
+    "The Scorer's Public Summary of the score, once completed; per-item scores are never returned"
+)
 REPO_PATH_DESCRIPTION = "The Submission's folder in the Challenge Repo, once synced"
 SYNC_STATUS_DESCRIPTION = "Whether the folder is in the Challenge Repo: pending, synced or failed"
 
@@ -38,7 +42,7 @@ class SubmissionRead(BaseModel):
     status: SubmissionStatus = Field(..., description="pending, processing, completed (scored) or failed")
     status_message: Optional[str] = Field(None, description="The error, once failed")
     headline_metric: Optional[float] = Field(None, description=HEADLINE_METRIC_DESCRIPTION)
-    score_details: Optional[Dict[str, Any]] = Field(None, description="Everything else the Scorer returned")
+    public_summary: Optional[List[PublicSummaryValue]] = Field(None, description=PUBLIC_SUMMARY_DESCRIPTION)
     repo_path: Optional[str] = Field(None, description=REPO_PATH_DESCRIPTION)
     sync_status: SyncStatus = Field(..., description=SYNC_STATUS_DESCRIPTION)
     created_at: datetime.datetime = Field(..., description="Creation timestamp of the submission")
@@ -67,7 +71,7 @@ class SubmissionStatusResponse(BaseModel):
     status: SubmissionStatus = Field(..., description="Current status of the submission")
     status_message: Optional[str] = Field(None, description="The error, once failed")
     headline_metric: Optional[float] = Field(None, description=HEADLINE_METRIC_DESCRIPTION)
-    score_details: Optional[Dict[str, Any]] = Field(None, description="Everything else the Scorer returned")
+    public_summary: Optional[List[PublicSummaryValue]] = Field(None, description=PUBLIC_SUMMARY_DESCRIPTION)
     repo_path: Optional[str] = Field(None, description=REPO_PATH_DESCRIPTION)
     sync_status: SyncStatus = Field(..., description=SYNC_STATUS_DESCRIPTION)
     created_at: Optional[datetime.datetime] = Field(None, description="Creation timestamp")

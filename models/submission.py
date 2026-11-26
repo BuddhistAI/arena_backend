@@ -1,14 +1,16 @@
 from sqlalchemy import Column, String, DateTime, Float, ForeignKey, Enum, JSON, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.orm import Query, Session
+from sqlalchemy.orm import Query, Session, relationship
 from sqlalchemy.sql.elements import ColumnElement
 from database import Base
 from models.challenge import SyncStatus
 from models.columns import EnumString, one_of
+from service import scorer_catalogue
 import datetime
 import uuid
 import enum
+from typing import Any, Dict, List, Optional
 
 class SubmissionStatus(enum.Enum):
     PENDING = "pending"
@@ -67,6 +69,16 @@ class Submission(Base):
     deleted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     updated_at = Column(DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    challenge = relationship("Challenge")
+
+    @property
+    def public_summary(self) -> Optional[List[Dict[str, Any]]]:
+        """The Scorer's Public Summary of the score, the only part of
+        ``score_details`` that leaves the arena; None until scored."""
+        if self.score_details is None:
+            return None
+        return scorer_catalogue.summarise(self.challenge.scorer_name, self.score_details)
 
     @hybrid_property
     def is_live(self) -> bool:

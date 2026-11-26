@@ -139,7 +139,8 @@ def folder_slug(name: str) -> str:
 
 def submission_json(submission: Submission, *, submitter: str, scorer_name: str) -> Dict[str, Any]:
     """The Submission's public metadata. Fields that do not apply to its type
-    are null; the submitter is named by public username only.
+    are null; the submitter is named by public username only; its score is
+    the Headline Metric and the Scorer's Public Summary, never per-item scores.
 
     Args:
         submission: The scored Submission.
@@ -159,6 +160,7 @@ def submission_json(submission: Submission, *, submitter: str, scorer_name: str)
         "submitter": submitter,
         "scorer_name": scorer_name,
         "headline_metric": submission.headline_metric,
+        "public_summary": submission.public_summary,
         "preferred_model": submission.preferred_model,
         "model_link": submission.model_link,
         "license": submission.license,
