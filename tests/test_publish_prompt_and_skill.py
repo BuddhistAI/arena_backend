@@ -90,6 +90,9 @@ def test_a_prompts_metadata_names_its_preferred_model_and_license(
         "submitter": "tenzin",
         "scorer_name": "cer",
         "headline_metric": 0.0,
+        "public_summary": [
+            {"key": "corpus", "label": "Corpus CER", "value": 0.0, "format": {"style": "percent", "decimals": 2}}
+        ],
         "preferred_model": "gemini-2.5-pro",
         "model_link": None,
         "license": "CC0-1.0",
@@ -178,6 +181,9 @@ def test_a_skills_metadata_names_its_preferred_model_and_license(challenge, scor
         "submitter": "tenzin",
         "scorer_name": "cer",
         "headline_metric": 0.0,
+        "public_summary": [
+            {"key": "corpus", "label": "Corpus CER", "value": 0.0, "format": {"style": "percent", "decimals": 2}}
+        ],
         "preferred_model": "claude-sonnet-4-5",
         "model_link": None,
         "license": "Apache-2.0",

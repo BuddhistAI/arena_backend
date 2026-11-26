@@ -44,7 +44,8 @@ def test_a_scored_model_submission_is_published_as_its_submission_json(
     client, challenge, scored, repo_host, sync_worker
 ):
     """A completed Model Submission gets ``models/<slug>-<id>/submission.json``
-    holding its metadata, and no other file."""
+    holding its metadata, its Public Summary beside its Headline Metric, and
+    no other file."""
     submission_id = scored(name="Google Vision OCR", model_link="https://cloud.google.com/vision")
 
     sync_worker.drain()
@@ -62,6 +63,9 @@ def test_a_scored_model_submission_is_published_as_its_submission_json(
         "submitter": "tenzin",
         "scorer_name": "cer",
         "headline_metric": 0.0,
+        "public_summary": [
+            {"key": "corpus", "label": "Corpus CER", "value": 0.0, "format": {"style": "percent", "decimals": 2}}
+        ],
         "preferred_model": None,
         "model_link": "https://cloud.google.com/vision",
         "license": None,
@@ -176,7 +180,7 @@ def test_a_submission_that_failed_scoring_is_never_published(
 
     repo = next(iter(repo_host.repos))
     assert submission_folders(repo_host, repo) == []
-    assert read(client, response.json()["id"])["repo_path"] is None
+    assert read(client, response.json()["id"], headers_for(participant))["repo_path"] is None
 
 
 def test_a_later_challenge_sync_keeps_the_published_submissions(
@@ -297,3 +301,36 @@ def test_a_later_submission_whose_folder_would_collide_uses_its_full_id(
         "models/google-vision-ocr-aaaaaaaa",
         f"models/google-vision-ocr-{later}",
     ]
+
+
+def rename(client, headers, username):
+    response = client.patch("/users/me", json={"username": username}, headers=headers)
+    assert response.status_code == 200, response.text
+
+
+def published_submitter(repo_host, submission_id):
+    """The ``submitter`` in the published ``submission.json`` of the Submission."""
+    files = repo_host.repos[REPO].files
+    [path] = [p for p in files if p.endswith(f"-{submission_id[:8]}/submission.json")]
+    return json.loads(files[path])["submitter"]
+
+
+def test_a_rename_leaves_published_submissions_under_the_old_username(
+    client, headers_for, participant, scored, repo_host, sync_worker
+):
+    """A ``submission.json`` already synced keeps the username it was written
+    with, even when a later Submission syncs the Challenge again; the later
+    Submission is published under the new username."""
+    earlier = scored(name="Google Vision OCR")
+    sync_worker.drain()
+    commits_before_rename = len(repo_host.repos[REPO].commits)
+
+    rename(client, headers_for(participant), "tenzin-dorje")
+    sync_worker.drain()
+    assert len(repo_host.repos[REPO].commits) == commits_before_rename  # a rename does not resync
+
+    later = scored(name="Tesseract")
+    sync_worker.drain()
+
+    assert published_submitter(repo_host, earlier) == "tenzin"
+    assert published_submitter(repo_host, later) == "tenzin-dorje"

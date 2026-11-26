@@ -5,7 +5,7 @@ stored and scored exactly like a Model Submission."""
 import pytest
 
 from test_create_challenge import category, jsonl  # noqa: F401  (category is a fixture)
-from test_model_submission import assert_rejected, challenge, participant, read, submit  # noqa: F401  (fixtures)
+from test_model_submission import assert_rejected, challenge, own, participant, read, submit  # noqa: F401  (fixtures)
 
 PROMPT = "Transcribe the Tibetan text in the image. Answer with the text only.\n"
 
@@ -83,7 +83,7 @@ def test_a_typed_prompt_is_stored_privately_as_markdown(client, headers_for, par
     assert key.endswith(".md")
     assert storage.content_types[key].startswith("text/markdown")
     assert storage.objects[key] == typed.encode()
-    assert key not in str(read(client, submission_id))
+    assert key not in str(read(client, submission_id, headers_for(participant)))
 
 
 def test_an_uploaded_prompt_file_is_stored_privately_as_markdown(
@@ -166,7 +166,7 @@ def test_a_preferred_model_the_arena_has_never_seen_is_accepted(
     )
 
     assert response.status_code == 202, response.text
-    assert read(client, response.json()["id"])["preferred_model"] == "acme/brand-new-model-2026-11-25"
+    assert read(client, response.json()["id"], headers_for(participant))["preferred_model"] == "acme/brand-new-model-2026-11-25"
 
 
 @pytest.mark.parametrize("license_id", ["CC-BY-4.0", "CC0-1.0", "MIT", "Apache-2.0"])
@@ -175,7 +175,7 @@ def test_each_offered_license_is_accepted(client, headers_for, participant, chal
     response = submit_prompt(client, headers_for(participant), challenge, license=license_id)
 
     assert response.status_code == 202, response.text
-    assert read(client, response.json()["id"])["license"] == license_id
+    assert read(client, response.json()["id"], headers_for(participant))["license"] == license_id
 
 
 @pytest.mark.parametrize("license_id", ["GPL-3.0", "cc-by-4.0", "CC-BY-SA-4.0", "proprietary"])
@@ -252,7 +252,7 @@ def test_a_prompt_needs_no_input_placeholder(client, headers_for, participant, c
 
 def test_a_prompt_submission_creates_no_model(client, headers_for, participant, challenge):
     """A Prompt Submission is not a model: it neither creates nor references one."""
-    submission_id = submit_prompt(client, headers_for(participant), challenge).json()["id"]
+    response = submit_prompt(client, headers_for(participant), challenge)
 
-    assert read(client, submission_id)["model_id"] is None
+    assert own(client, headers_for(participant), response)["model_id"] is None
     assert client.get("/model/").json() == []

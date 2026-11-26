@@ -1,5 +1,5 @@
 from fastapi import APIRouter, status, HTTPException, Depends, Path, Query, UploadFile, File, Form
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from typing import Annotated, List, Optional, Union
 from sqlalchemy.orm import Session
 import models
@@ -8,17 +8,26 @@ from database import get_db
 from schemas.submission import (
     DailyLimitResponse,
     SubmissionCreatedResponse,
+    SubmissionDetailRead,
     SubmissionRead,
     SubmissionStatusResponse,
 )
 from ports.clock import Clock, get_clock
 from ports.object_storage import ObjectStorage, get_object_storage
 from service.daily_limit import DailyLimitReached
+from service.submission_detail import (
+    SubmissionDetail,
+    SubmissionGone,
+    SubmissionNotFound,
+    read_submission_detail,
+    read_visible_submission,
+)
+from service.submission_download import DownloadNotFound, presigned_download_url
 from service.submission_deletion import delete_submission as delete_submission_and_files
 from service.submission_intake import SubmissionForm, SubmissionIntake, SubmissionRejected
 from submission_worker import SubmissionQueue, get_queue_stats, get_submission_queue
 from submission_cache import get_cache_stats
-from auth import get_current_active_user, require_admin
+from auth import get_current_active_user, get_optional_user, require_admin
 from models.submission import SubmissionStatus
 import datetime
 import math
@@ -27,6 +36,7 @@ import uuid
 # Constants for repeated strings
 SUBMISSION_ID_PATH_DESCRIPTION = "This is the ID of the submission"
 SUBMISSION_NOT_FOUND_MESSAGE = "Submission not found"
+SUBMISSION_DELETED_MESSAGE = "This Submission was deleted"
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
@@ -77,28 +87,85 @@ def list_preferred_models(db: db_dependency) -> List[str]:
     )
     return [preferred_model for (preferred_model,) in rows]
 
-@router.get("/{submission_id}", response_model=SubmissionRead)
-async def get_submission(
-    db: db_dependency, submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION)
-) -> models.Submission:
-    """Read a Submission that was not deleted."""
-    return _live_submission_or_404(db, submission_id)
+@router.get(
+    "/{submission_id}",
+    response_model=SubmissionDetailRead,
+    responses={
+        404: {"description": "No Submission has that id, or it is not scored and not yours."},
+        410: {"description": "The Submission was deleted."},
+    },
+)
+def get_submission(
+    db: db_dependency,
+    viewer: Optional[User] = Depends(get_optional_user),
+    storage: ObjectStorage = Depends(get_object_storage),
+    submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION),
+) -> SubmissionDetail:
+    """
+    Everything public about a Submission, for its detail page. A scored
+    Submission is public; one pending, processing or failed is shown only
+    to its submitter and admins, with its status and message. Per-item
+    scores are never returned, only the Scorer's Public Summary.
+    """
+    try:
+        return read_submission_detail(db, storage, submission_id, viewer=viewer)
+    except SubmissionNotFound:
+        raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
+    except SubmissionGone:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail=SUBMISSION_DELETED_MESSAGE)
 
-@router.get("/{submission_id}/status", response_model=SubmissionStatusResponse)
-async def get_submission_status(
-    db: db_dependency, 
-    submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION)
+@router.get(
+    "/{submission_id}/download",
+    status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    response_class=RedirectResponse,
+    responses={404: {"description": "No scored, live Prompt or Skill has that id."}},
+)
+def download_submission(
+    db: db_dependency,
+    storage: ObjectStorage = Depends(get_object_storage),
+    submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION),
+) -> RedirectResponse:
+    """
+    Download a scored Prompt as ``<slug>-<id>.md`` or a Skill as the zip its
+    author uploaded, ``<slug>-<id>.zip``; no sign-in. Redirects to a
+    short-lived storage URL, so the download works whatever the Submission's
+    GitHub sync status. A Model has no download.
+    """
+    try:
+        return RedirectResponse(presigned_download_url(db, storage, submission_id))
+    except DownloadNotFound:
+        raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
+
+@router.get(
+    "/{submission_id}/status",
+    response_model=SubmissionStatusResponse,
+    responses={
+        404: {"description": "No Submission has that id, or it is not scored and not yours."},
+        410: {"description": "The Submission was deleted."},
+    },
+)
+def get_submission_status(
+    db: db_dependency,
+    viewer: Optional[User] = Depends(get_optional_user),
+    submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION),
 ) -> models.Submission:
     """
-    Get where a Submission is in scoring, to poll after creating it.
+    Get where a Submission is in scoring, to poll after creating it. Visible
+    as its detail is: a scored Submission to anyone, one pending, processing
+    or failed only to its submitter and admins.
 
     Status values:
     - pending: stored, waiting for a worker
     - processing: being scored
-    - completed: scored; ``headline_metric`` and ``score_details`` are set
+    - completed: scored; ``headline_metric`` and ``public_summary`` are set
     - failed: ``status_message`` says why
     """
-    return _live_submission_or_404(db, submission_id)
+    try:
+        return read_visible_submission(db, submission_id, viewer=viewer)
+    except SubmissionNotFound:
+        raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
+    except SubmissionGone:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail=SUBMISSION_DELETED_MESSAGE)
 
 
 

@@ -29,15 +29,16 @@ def delete(client, submission_id, headers):
 
 
 def test_the_submitter_deletes_their_submission_and_it_is_gone(client, headers_for, participant, challenge):
-    """The submitter gets 204, and reading the Submission then answers 404."""
+    """The submitter gets 204; reading the Submission or its status then
+    answers 410 Gone."""
     headers = headers_for(participant)
     submission_id = submitted(client, headers, challenge)
 
     response = delete(client, submission_id, headers)
 
     assert response.status_code == 204, response.text
-    assert client.get(f"/submissions/{submission_id}").status_code == 404
-    assert client.get(f"/submissions/{submission_id}/status").status_code == 404
+    assert client.get(f"/submissions/{submission_id}", headers=headers).status_code == 410
+    assert client.get(f"/submissions/{submission_id}/status", headers=headers).status_code == 410
 
 
 def test_an_admin_deletes_anyones_submission(client, headers_for, admin_headers, participant, challenge):
@@ -47,7 +48,7 @@ def test_an_admin_deletes_anyones_submission(client, headers_for, admin_headers,
     response = delete(client, submission_id, admin_headers)
 
     assert response.status_code == 204, response.text
-    assert client.get(f"/submissions/{submission_id}").status_code == 404
+    assert client.get(f"/submissions/{submission_id}", headers=admin_headers).status_code == 410
 
 
 def test_another_user_cannot_delete_a_submission(client, headers_for, user_headers, participant, challenge):
@@ -57,7 +58,7 @@ def test_another_user_cannot_delete_a_submission(client, headers_for, user_heade
     response = delete(client, submission_id, user_headers)
 
     assert response.status_code == 403, response.text
-    assert client.get(f"/submissions/{submission_id}").status_code == 200
+    assert client.get(f"/submissions/{submission_id}", headers=headers_for(participant)).status_code == 200
 
 
 def test_an_anonymous_visitor_cannot_delete_a_submission(client, headers_for, participant, challenge):
@@ -67,7 +68,7 @@ def test_an_anonymous_visitor_cannot_delete_a_submission(client, headers_for, pa
     response = client.delete(f"/submissions/{submission_id}")
 
     assert response.status_code == 403, response.text
-    assert client.get(f"/submissions/{submission_id}").status_code == 200
+    assert client.get(f"/submissions/{submission_id}", headers=headers_for(participant)).status_code == 200
 
 
 def test_deleting_an_already_deleted_submission_is_not_found(client, headers_for, participant, challenge):
@@ -325,7 +326,7 @@ def test_a_submission_cannot_be_edited(client, headers_for, participant, challen
     response = getattr(client, method)(f"/submissions/{submission_id}", json={"name": "Edited"}, headers=headers)
 
     assert response.status_code == 405, response.text
-    assert client.get(f"/submissions/{submission_id}").json()["name"] == "Google Vision OCR"
+    assert client.get(f"/submissions/{submission_id}", headers=headers).json()["name"] == "Google Vision OCR"
 
 
 @pytest.mark.parametrize("path", ["/submissions/my", "/submissions"])

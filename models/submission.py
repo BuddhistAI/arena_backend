@@ -1,14 +1,16 @@
 from sqlalchemy import Column, String, DateTime, Float, ForeignKey, Enum, JSON, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.orm import Query, Session
+from sqlalchemy.orm import Query, Session, relationship
 from sqlalchemy.sql.elements import ColumnElement
 from database import Base
 from models.challenge import SyncStatus
 from models.columns import EnumString, one_of
+from service import scorer_catalogue
 import datetime
 import uuid
 import enum
+from typing import Any, Dict, List, Optional
 
 class SubmissionStatus(enum.Enum):
     PENDING = "pending"
@@ -59,6 +61,9 @@ class Submission(Base):
     # Challenge Repo: the Submission's folder, set once it is published.
     # Its sync rides on the Challenge's (see ``sync_worker``).
     repo_path = Column(String, nullable=True)
+    # The public username its ``submission.json`` was first published under.
+    # Later syncs keep it, so a rename does not rewrite what is published.
+    published_submitter = Column(String, nullable=True)
     sync_status = Column(
         String, nullable=False, default=SyncStatus.PENDING.value, server_default=SyncStatus.PENDING.value
     )
@@ -67,6 +72,16 @@ class Submission(Base):
     deleted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     updated_at = Column(DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    challenge = relationship("Challenge")
+
+    @property
+    def public_summary(self) -> Optional[List[Dict[str, Any]]]:
+        """The Scorer's Public Summary of the score, the only part of
+        ``score_details`` that leaves the arena; None until scored."""
+        if self.score_details is None:
+            return None
+        return scorer_catalogue.summarise(self.challenge.scorer_name, self.score_details)
 
     @hybrid_property
     def is_live(self) -> bool:
@@ -89,14 +104,30 @@ class Submission(Base):
         """
         return db.query(cls).filter(cls.is_live)
 
-    def mark_synced(self, repo_path: str) -> None:
-        """The Submission's folder is in the Challenge Repo at ``repo_path``.
+    def mark_synced(self, repo_path: str, *, submitter: str) -> None:
+        """The Submission's folder is in the Challenge Repo at ``repo_path``,
+        published under the public username ``submitter``.
 
         Args:
             repo_path: The folder's path in the Challenge Repo.
+            submitter: The username its ``submission.json`` holds.
         """
         self.sync_status = SyncStatus.SYNCED
         self.repo_path = repo_path
+        self.published_submitter = submitter
+
+    def submitter_to_publish(self, current_username: str) -> str:
+        """The public username to publish the Submission under: the one it was
+        first published under, so a rename does not rewrite what is published,
+        or else its submitter's current one.
+
+        Args:
+            current_username: The submitter's public username now.
+
+        Returns:
+            The username its ``submission.json`` holds.
+        """
+        return self.published_submitter or current_username
 
     def queue_sync(self) -> None:
         """Wait for the next sync of the Challenge to publish the folder."""

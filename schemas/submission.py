@@ -1,14 +1,19 @@
 import uuid
 import datetime
 from pydantic import BaseModel, Field
-from typing import Any, Dict, Optional
+from typing import List, Optional
 from enum import Enum
 
 from models.challenge import SyncStatus
 from models.submission import SubmissionType
+from schemas.leaderboard import LeaderboardScorerRead
+from schemas.scorer import PublicSummaryValue
 
 SUBMISSION_ID_DESCRIPTION = "ID of the submission"
 HEADLINE_METRIC_DESCRIPTION = "The Scorer's Headline Metric, unrounded; set once completed"
+PUBLIC_SUMMARY_DESCRIPTION = (
+    "The Scorer's Public Summary of the score, once completed; per-item scores are never returned"
+)
 REPO_PATH_DESCRIPTION = "The Submission's folder in the Challenge Repo, once synced"
 SYNC_STATUS_DESCRIPTION = "Whether the folder is in the Challenge Repo: pending, synced or failed"
 
@@ -38,7 +43,7 @@ class SubmissionRead(BaseModel):
     status: SubmissionStatus = Field(..., description="pending, processing, completed (scored) or failed")
     status_message: Optional[str] = Field(None, description="The error, once failed")
     headline_metric: Optional[float] = Field(None, description=HEADLINE_METRIC_DESCRIPTION)
-    score_details: Optional[Dict[str, Any]] = Field(None, description="Everything else the Scorer returned")
+    public_summary: Optional[List[PublicSummaryValue]] = Field(None, description=PUBLIC_SUMMARY_DESCRIPTION)
     repo_path: Optional[str] = Field(None, description=REPO_PATH_DESCRIPTION)
     sync_status: SyncStatus = Field(..., description=SYNC_STATUS_DESCRIPTION)
     created_at: datetime.datetime = Field(..., description="Creation timestamp of the submission")
@@ -67,11 +72,50 @@ class SubmissionStatusResponse(BaseModel):
     status: SubmissionStatus = Field(..., description="Current status of the submission")
     status_message: Optional[str] = Field(None, description="The error, once failed")
     headline_metric: Optional[float] = Field(None, description=HEADLINE_METRIC_DESCRIPTION)
-    score_details: Optional[Dict[str, Any]] = Field(None, description="Everything else the Scorer returned")
+    public_summary: Optional[List[PublicSummaryValue]] = Field(None, description=PUBLIC_SUMMARY_DESCRIPTION)
     repo_path: Optional[str] = Field(None, description=REPO_PATH_DESCRIPTION)
     sync_status: SyncStatus = Field(..., description=SYNC_STATUS_DESCRIPTION)
     created_at: Optional[datetime.datetime] = Field(None, description="Creation timestamp")
     updated_at: Optional[datetime.datetime] = Field(None, description="Last update timestamp")
+
+    class Config:
+        from_attributes = True
+
+
+class SubmissionDetailRead(BaseModel):
+    """Everything public about one Submission, for its detail page. Never
+    holds per-item scores, the submitter's email or their user id."""
+
+    id: uuid.UUID = Field(..., description=SUBMISSION_ID_DESCRIPTION)
+    challenge_id: uuid.UUID = Field(..., description="ID of the challenge")
+    rank: Optional[int] = Field(
+        None, description="Its Rank on the Challenge's Leaderboard; null until scored"
+    )
+    type: SubmissionType = Field(..., description="Submission Type: model, prompt or skill")
+    name: str = Field(..., description="Name of the Submission; for a Model, the model name")
+    submitter: str = Field(..., description="The submitter's current public username")
+    created_at: datetime.datetime = Field(..., description="When the Submission was made")
+    description: Optional[str] = Field(None, description="Description; for a Prompt or Skill, how to run it")
+    status: SubmissionStatus = Field(..., description="pending, processing, completed (scored) or failed")
+    status_message: Optional[str] = Field(None, description="The error, once failed")
+    scorer: LeaderboardScorerRead = Field(..., description="The Challenge's Scorer and how to show its numbers")
+    headline_metric: Optional[float] = Field(None, description=HEADLINE_METRIC_DESCRIPTION)
+    public_summary: Optional[List[PublicSummaryValue]] = Field(None, description=PUBLIC_SUMMARY_DESCRIPTION)
+    model_link: Optional[str] = Field(None, description="Model only: optional https link to the model")
+    preferred_model: Optional[str] = Field(
+        None, description="Prompt and Skill: the exact model id the Artifact was run with"
+    )
+    license: Optional[str] = Field(None, description="Prompt and Skill: the Artifact's license")
+    sync_status: SyncStatus = Field(..., description=SYNC_STATUS_DESCRIPTION)
+    repo_path: Optional[str] = Field(None, description=REPO_PATH_DESCRIPTION)
+    repo_url: Optional[str] = Field(
+        None, description="The Submission's folder in the Challenge Repo on GitHub; null until synced"
+    )
+    prompt_text: Optional[str] = Field(None, description="Prompt only: the prompt's text, as submitted")
+    download_url: Optional[str] = Field(
+        None,
+        description="Prompt and Skill: where to download the Artifact, relative to the API root; null for a Model",
+    )
 
     class Config:
         from_attributes = True

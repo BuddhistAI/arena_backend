@@ -1,4 +1,4 @@
-"""Object storage port: put, get, delete and public URL.
+"""Object storage port: put, get, delete, public URL and presigned download.
 
 Public material (Inputs, Media Archive) goes under ``PUBLIC_PREFIX``, which
 the bucket serves publicly. Ground Truth goes under ``PRIVATE_PREFIX`` and
@@ -11,8 +11,10 @@ that dependency with ``InMemoryObjectStorage``.
 import io
 import mimetypes
 import os
+from dataclasses import dataclass
 from functools import lru_cache
-from typing import BinaryIO, Dict, Optional, Protocol, Union
+from typing import BinaryIO, Dict, List, Optional, Protocol, Union
+from urllib.parse import urlencode
 
 PUBLIC_PREFIX = "evalai/public/"
 PRIVATE_PREFIX = "evalai/private/"
@@ -53,15 +55,31 @@ class ObjectStorage(Protocol):
         """URL anyone can download a public object from. Raises
         ``PrivateObjectError`` for keys outside the public prefix."""
 
+    def presigned_download_url(self, key: str, *, expires_in_seconds: int, file_name: str) -> str:
+        """Short-lived URL anyone can download the object from, public or
+        private, saved as ``file_name``."""
+
+
+@dataclass(frozen=True)
+class PresignedDownload:
+    """A presigned download the in-memory fake handed out."""
+
+    key: str
+    expires_in_seconds: int
+    file_name: str
+    url: str
+
 
 class InMemoryObjectStorage:
-    """Fake for tests. ``objects`` maps each key to its bytes."""
+    """Fake for tests. ``objects`` maps each key to its bytes;
+    ``presigned_downloads`` records every presigned download URL handed out."""
 
     base_url = "https://storage.test"
 
     def __init__(self) -> None:
         self.objects: Dict[str, bytes] = {}
         self.content_types: Dict[str, Optional[str]] = {}
+        self.presigned_downloads: List[PresignedDownload] = []
 
     def put(self, key: str, body: Body, content_type: Optional[str] = None) -> None:
         self.objects[key] = body if isinstance(body, bytes) else body.read()
@@ -80,6 +98,14 @@ class InMemoryObjectStorage:
     def public_url(self, key: str) -> str:
         _require_public(key)
         return f"{self.base_url}/{key}"
+
+    def presigned_download_url(self, key: str, *, expires_in_seconds: int, file_name: str) -> str:
+        query = urlencode(
+            {"signature": len(self.presigned_downloads), "expires": expires_in_seconds, "filename": file_name}
+        )
+        url = f"{self.base_url}/{key}?{query}"
+        self.presigned_downloads.append(PresignedDownload(key, expires_in_seconds, file_name, url))
+        return url
 
 
 class S3ObjectStorage:
@@ -131,6 +157,17 @@ class S3ObjectStorage:
 
         _require_public(key)
         return generate_public_s3_url(key)
+
+    def presigned_download_url(self, key: str, *, expires_in_seconds: int, file_name: str) -> str:
+        return self.client.generate_presigned_url(
+            "get_object",
+            Params={
+                "Bucket": self.bucket,
+                "Key": key,
+                "ResponseContentDisposition": f'attachment; filename="{file_name}"',
+            },
+            ExpiresIn=expires_in_seconds,
+        )
 
 
 @lru_cache()

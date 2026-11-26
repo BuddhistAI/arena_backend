@@ -98,7 +98,7 @@ def test_admin_creates_a_challenge_whose_files_are_stored_and_sync_is_pending(
     assert created["scorer_label"] == "Character Error Rate (CER)"
     assert created["direction"] == "lower_is_better"
     assert created["scorer_params"] == {"language": "bo"}  # default filled in
-    assert created["package_version"] == "0.2.0"
+    assert created["package_version"] == "0.3.0"
     assert created["repo_name"] == "challenge-tibetan-ocr-woodblocks"
     assert created["sync_status"] == "pending"
     assert created["sync_attempts"] == 0

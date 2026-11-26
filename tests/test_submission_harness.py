@@ -20,9 +20,9 @@ def submission_id(client, headers_for, submitter, challenge):
     return response.json()["id"]
 
 
-def test_an_anonymous_visitor_reads_a_submission(client, submission_id):
-    """Anyone, signed in or not, can read a Submission by its id."""
-    response = client.get(f"/submissions/{submission_id}")
+def test_the_submitter_reads_their_pending_submission(client, headers_for, submitter, submission_id):
+    """The submitter reads their Submission by its id while it waits to be scored."""
+    response = client.get(f"/submissions/{submission_id}", headers=headers_for(submitter))
 
     assert response.status_code == 200, response.text
     assert response.json()["id"] == submission_id
@@ -41,15 +41,17 @@ def test_a_signed_in_user_lists_only_their_own_submissions(
     assert someone_elses.json() == []
 
 
-def test_queued_work_waits_until_the_submission_worker_is_drained(client, submission_id, submission_queue):
+def test_queued_work_waits_until_the_submission_worker_is_drained(
+    client, headers_for, submitter, submission_id, submission_queue
+):
     """No background thread picks up queued work during a test."""
     assert submission_queue.tasks.qsize() == 1
-    assert read(client, submission_id)["status"] == "pending"
+    assert read(client, submission_id, headers_for(submitter))["status"] == "pending"
 
 
-def test_draining_runs_queued_work_to_a_final_status(client, submission_id, submission_worker):
+def test_draining_runs_queued_work_to_a_final_status(client, headers_for, submitter, submission_id, submission_worker):
     """Draining scores every queued Submission on the calling thread until it
     is completed or failed."""
     assert submission_worker.drain() == 1
 
-    assert read(client, submission_id)["status"] in ("completed", "failed")
+    assert read(client, submission_id, headers_for(submitter))["status"] in ("completed", "failed")

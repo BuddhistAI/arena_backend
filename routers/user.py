@@ -1,5 +1,6 @@
 from fastapi import APIRouter, status, HTTPException, Depends, Path
 from typing import Annotated, List
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from models.user import User
 from models.challenge import Challenge
@@ -87,17 +88,36 @@ async def delete_current_user(
 
 # for updating user
 
+USERNAME_TAKEN = "That username is taken."
+
+
+def _username_taken(db: Session, username: str, *, by_other_than: User) -> bool:
+    return (
+        db.query(User.id).filter(User.username == username, User.id != by_other_than.id).first()
+        is not None
+    )
+
+
 @router.patch("/me", response_model=UserRead, status_code=status.HTTP_200_OK)
 async def update_current_user(
     db: db_dependency,
     current_user: User = Depends(get_current_active_user),
     user_update: UserUpdate = Body(..., description="The fields to update for the current user")
 ):
-    """Update the currently authenticated user."""
+    """Update the currently authenticated user. A ``username`` another user
+    already has answers 409."""
     update_data = user_update.model_dump(exclude_unset=True)
+    username = update_data.get("username")
+    if username is not None and _username_taken(db, username, by_other_than=current_user):
+        raise HTTPException(status_code=409, detail=USERNAME_TAKEN)
     for field, value in update_data.items():
         setattr(current_user, field, value)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Someone else took the username between the check and the commit.
+        db.rollback()
+        raise HTTPException(status_code=409, detail=USERNAME_TAKEN)
     db.refresh(current_user)
     return current_user
 
