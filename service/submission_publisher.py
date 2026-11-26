@@ -71,18 +71,6 @@ class PublishedSubmission:
     files: Dict[str, bytes]
 
 
-def is_publishable(submission_type: str) -> bool:
-    """Whether Submissions of this type have a publisher entry yet.
-
-    Args:
-        submission_type: A ``SubmissionType`` value.
-
-    Returns:
-        True when ``submission_files`` can publish it.
-    """
-    return SubmissionType(submission_type) in ARTIFACT_FILES
-
-
 def submission_files(
     submission: Submission,
     *,
@@ -94,7 +82,7 @@ def submission_files(
     """The folder and files that publish ``submission``.
 
     Args:
-        submission: A scored Submission of a publishable type.
+        submission: A scored Submission.
         submitter: The submitter's public username.
         scorer_name: The Scorer of the Submission's Challenge.
         storage: Where the Artifact is stored.

@@ -63,20 +63,16 @@ class SubmissionQueue:
         self.tasks: "queue.Queue[Optional[SubmissionTask]]" = queue.Queue()
         self._stats = {"total_queued": 0, "total_processed": 0, "queue_size": 0}
 
-    def add_task(self, task: SubmissionTask) -> bool:
+    def add_task(self, task: SubmissionTask) -> None:
         """Queue ``task`` for a worker.
 
         Args:
             task: The submission to process.
-
-        Returns:
-            True once the task is queued.
         """
         self.tasks.put(task)
         self._stats["total_queued"] += 1
         self._stats["queue_size"] = self.tasks.qsize()
         logger.info(f"Task queued: {task.submission_id} (queue size: {self._stats['queue_size']})")
-        return True
 
     def mark_processed(self) -> None:
         """Count a task a worker has finished with."""

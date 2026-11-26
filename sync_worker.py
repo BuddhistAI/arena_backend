@@ -46,7 +46,7 @@ from ports.clock import Clock, utc_now
 from ports.object_storage import ObjectNotFound, ObjectStorage
 from ports.repo_host import RepoAlreadyExists, RepoHost, RepoNotFound
 from service.challenge_publisher import MAX_COMMITTED_INPUTS_BYTES, challenge_files
-from service.submission_publisher import PublishedSubmission, is_publishable, submission_files
+from service.submission_publisher import PublishedSubmission, submission_files
 
 logger = logging.getLogger(__name__)
 
@@ -193,9 +193,9 @@ class SyncWorker:
         return submissions
 
     def _published_submissions(self, challenge: Challenge) -> List[Tuple[Submission, PublishedSubmission]]:
-        """The Challenge's scored, not deleted Submissions of a publishable
-        type, oldest first, each with its folder. A Submission whose Artifact is missing
-        from storage is left out and marked ``failed``; the others publish."""
+        """The Challenge's scored, not deleted Submissions, oldest first, each
+        with its folder. A Submission whose Artifact is missing from storage
+        is left out and marked ``failed``; the others publish."""
         rows = (
             object_session(challenge)
             .query(Submission, User.username)
@@ -210,8 +210,6 @@ class SyncWorker:
         )
         published = []
         for submission, username in rows:
-            if not is_publishable(submission.type):
-                continue
             try:
                 files = submission_files(
                     submission,
