@@ -35,3 +35,34 @@ def test_listing_scorers_requires_sign_in(client):
     response = client.get("/scorers")
 
     assert response.status_code in (401, 403)
+
+
+def test_each_scorer_says_how_its_headline_metric_is_displayed(client, user_headers):
+    scorers = _scorers_by_name(client.get("/scorers", headers=user_headers))
+
+    formats = {name: scorer["display_format"] for name, scorer in scorers.items()}
+    assert formats == {
+        "cer": {"style": "percent", "decimals": 2},
+        "wer": {"style": "percent", "decimals": 2},
+        "span_f1": {"style": "decimal", "decimals": 3},
+        "toc": {"style": "decimal", "decimals": 3},
+        "mcq_accuracy": {"style": "percent", "decimals": 1},
+    }
+
+
+def test_each_scorer_lists_its_public_summary_declaration(client, user_headers):
+    scorers = _scorers_by_name(client.get("/scorers", headers=user_headers))
+
+    assert scorers["cer"]["public_summary"] == [
+        {"key": "corpus", "label": "Corpus CER", "format": {"style": "percent", "decimals": 2}}
+    ]
+    assert [entry["key"] for entry in scorers["span_f1"]["public_summary"]] == [
+        "precision",
+        "recall",
+        "mean_iou",
+    ]
+    assert scorers["toc"]["public_summary"] == []
+    assert [entry["label"] for entry in scorers["mcq_accuracy"]["public_summary"]] == [
+        "Correct answers",
+        "Questions",
+    ]

@@ -47,7 +47,7 @@ def test_a_created_challenge_is_published_to_its_repo_with_challenge_json(
             "label": "Character Error Rate (CER)",
             "direction": "lower_is_better",
             "params": {"language": "bo"},
-            "package_version": "0.2.0",
+            "package_version": "0.3.0",
         },
         "data": {
             "id_field": "id",
@@ -200,7 +200,7 @@ def test_the_readme_explains_the_challenge_and_how_to_take_part(
     assert "`span_f1`" in readme
     assert "higher is better" in readme
     assert '"iou_threshold": 0.75' in readme
-    assert "buddhist-eval 0.2.0" in readme
+    assert "buddhist-eval 0.3.0" in readme
     assert "`data/inputs.jsonl`" in readme
     assert "`data/sample_submission.jsonl`" in readme
     assert "Ground Truth" in readme
