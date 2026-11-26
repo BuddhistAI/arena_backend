@@ -3,6 +3,7 @@ import datetime
 from pydantic import BaseModel, computed_field
 from typing import Any, Dict, Optional
 from models.challenge import Direction, SyncStatus
+from ports.repo_host import challenge_repo_url
 from schemas.category import CategoryRead
 
 
@@ -36,6 +37,13 @@ class ChallengeRead(BaseModel):
         """Locked once the first Submission arrived: the Scorer, its parameters
         and the data can no longer change."""
         return self.locked_at is not None
+
+    @computed_field
+    @property
+    def repo_url(self) -> str:
+        """The Challenge Repo on GitHub. It exists once the Sync Worker has
+        published the Challenge (``sync_status`` first becomes ``synced``)."""
+        return challenge_repo_url(self.repo_name)
 
     created_at: datetime.datetime
     updated_at: datetime.datetime

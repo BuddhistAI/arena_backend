@@ -7,6 +7,7 @@ the environment, from ``get_repo_host``. Tests hand the worker an
 ``InMemoryRepoHost`` instead.
 """
 
+import os
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Dict, List, Mapping, Protocol, Union
@@ -111,6 +112,16 @@ class InMemoryRepoHost:
     def archive_repo(self, name: str) -> None:
         self._maybe_fail()
         self._repo(name).archived = True
+
+
+DEFAULT_CHALLENGE_ORG = "BuddhistAI"
+
+
+def challenge_repo_url(repo_name: str) -> str:
+    """Public GitHub URL of the Challenge Repo ``repo_name``, under the org in
+    ``GITHUB_CHALLENGE_ORG`` (``BuddhistAI`` by default)."""
+    owner = os.getenv("GITHUB_CHALLENGE_ORG") or DEFAULT_CHALLENGE_ORG
+    return f"https://github.com/{owner}/{repo_name}"
 
 
 @lru_cache()
