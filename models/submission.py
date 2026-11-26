@@ -116,6 +116,19 @@ class Submission(Base):
         self.repo_path = repo_path
         self.published_submitter = submitter
 
+    def submitter_to_publish(self, current_username: str) -> str:
+        """The public username to publish the Submission under: the one it was
+        first published under, so a rename does not rewrite what is published,
+        or else its submitter's current one.
+
+        Args:
+            current_username: The submitter's public username now.
+
+        Returns:
+            The username its ``submission.json`` holds.
+        """
+        return self.published_submitter or current_username
+
     def queue_sync(self) -> None:
         """Wait for the next sync of the Challenge to publish the folder."""
         self.sync_status = SyncStatus.PENDING
