@@ -1,6 +1,6 @@
 import uuid
 import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 from typing import Any, Dict, Optional
 from schemas.category import CategoryRead
 
@@ -31,6 +31,13 @@ class ChallengeRead(BaseModel):
     sync_attempts: int
     last_sync_error: Optional[str] = None
     locked_at: Optional[datetime.datetime] = None
+
+    @computed_field
+    @property
+    def locked(self) -> bool:
+        """Locked once the first Submission arrived: the Scorer, its parameters
+        and the data can no longer change."""
+        return self.locked_at is not None
 
     created_at: datetime.datetime
     updated_at: datetime.datetime

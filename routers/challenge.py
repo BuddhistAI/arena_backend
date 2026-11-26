@@ -11,6 +11,7 @@ from schemas.challenge import ChallengeRead, ChallengeWithCategoryRead
 from uuid import UUID
 from sqlalchemy.orm import joinedload
 from auth import get_current_active_user, require_admin
+import io
 import logging
 import re
 import unicodedata
@@ -205,74 +206,182 @@ def _delete_quietly(storage: ObjectStorage, keys: List[str]) -> None:
         except Exception:
             logging.exception("Could not delete %s after a failed create", key)
 
-# for updating a challenge
+# for editing a challenge
 
-@router.patch("/update/{challenge_id}", response_model=ChallengeRead, status_code=status.HTTP_200_OK)
-async def update_challenge(
+# Form fields whose change re-validates the data and is refused after the Lock.
+DATA_FIELDS = ("scorer_name", "scorer_params", "inputs_file", "ground_truth_file", "media_archive_file")
+
+
+@router.patch(
+    "/update/{challenge_id}",
+    response_model=ChallengeRead,
+    status_code=status.HTTP_200_OK,
+    summary="Edit a challenge",
+    responses={
+        403: {"description": "The signed-in user is not an admin."},
+        409: {"description": "The Challenge is Locked and a data or Scorer field was sent, or the title is taken."},
+        422: {"description": "Invalid data: ``errors`` lists each problem."},
+    },
+)
+def update_challenge(
     db: db_dependency,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_admin),
+    storage: ObjectStorage = Depends(get_object_storage),
+    max_media_archive_bytes: int = Depends(media_archive_size_limit),
     challenge_id: UUID = Path(..., description="This is the ID of the challenge to update"),
-    title: Optional[str] = Form(None, description="Challenge title"),
+    title: Optional[str] = Form(None, description="Challenge title (does not rename the repo)"),
     category_id: Optional[str] = Form(None, description="Category ID"),
     image_uri: Optional[str] = Form(None, description="Challenge image URL"),
     description: Optional[str] = Form(None, description="Challenge description"),
-    status: Optional[str] = Form(None, description="Challenge status"),
+    challenge_status: Optional[str] = Form(None, alias="status", description="Challenge status"),
+    scorer_name: Optional[str] = Form(None, description="Name of a Scorer from GET /scorers"),
+    scorer_params: Optional[str] = Form(
+        None, description="The Scorer's parameters as a JSON object. Omitted with a new Scorer: its defaults"
+    ),
+    inputs_file: Optional[UploadFile] = File(None, description="Replacement Inputs JSONL"),
+    ground_truth_file: Optional[UploadFile] = File(None, description="Replacement Ground Truth JSONL"),
+    media_archive_file: Optional[UploadFile] = File(None, description="Replacement or new Media Archive (zip)"),
 ):
     """
-    Update an existing challenge's presentation fields. Fields are optional
-    and only updated if provided. Data and Scorer edits come with ticket 05.
+    Edit a Challenge (admin only). Every field is optional; a missing or
+    blank field is left unchanged. Scorer, parameter and file changes are
+    validated with the same rules as create, against the stored data for
+    whatever is not replaced, and are refused with 409 once the Challenge is
+    Locked. Title, description and image stay editable. Any accepted change
+    sets sync status to ``pending`` so the Sync Worker re-publishes the repo.
     """
-    try:
-        logging.info(f"Updating challenge: {challenge_id}")
-        
-        # Find existing challenge
-        challenge = db.query(Challenge).filter(Challenge.id == challenge_id).first()
-        if not challenge:
-            raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
-        
-        # Convert empty strings to None for all optional fields to preserve existing data
-        if title == "":
-            title = None
-        if category_id == "":
-            category_id = None
-        elif category_id is not None:
-            try:
-                category_id = UUID(category_id)  # Convert string to UUID
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid UUID format for category_id")
-        if image_uri == "":
-            image_uri = None
-        if description == "":
-            description = None
-        if status == "":
-            status = None
-        
-        # Update basic fields if provided
-        if title is not None:
-            challenge.title = title
-        if category_id is not None:
-            challenge.category_id = category_id
-        if image_uri is not None:
-            challenge.image_uri = image_uri
-        if description is not None:
-            challenge.description = description
-        if status is not None:
-            challenge.status = status
-        
-        # Commit changes
-        db.commit()
-        db.refresh(challenge)
-        
-        logging.info(f"Challenge updated successfully: {challenge_id}")
+    challenge = db.get(Challenge, challenge_id)
+    if challenge is None:
+        raise HTTPException(status_code=404, detail=CHALLENGE_NOT_FOUND_MESSAGE)
+
+    sent = {
+        name: value
+        for name, value in {
+            "title": (title or "").strip() or None,
+            "category_id": category_id or None,
+            "image_uri": image_uri or None,
+            "description": description or None,
+            "status": challenge_status or None,
+            "scorer_name": scorer_name or None,
+            "scorer_params": scorer_params or None,
+            "inputs_file": inputs_file,
+            "ground_truth_file": ground_truth_file,
+            "media_archive_file": media_archive_file,
+        }.items()
+        if value is not None
+    }
+    if not sent:
         return challenge
-        
-    except HTTPException:
+
+    data_edits = [name for name in DATA_FIELDS if name in sent]
+    if data_edits and challenge.locked_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"The Challenge is Locked (its first Submission arrived at {challenge.locked_at.isoformat()}), "
+                f"so {', '.join(data_edits)} can no longer change. Title, description and image can still be edited."
+            ),
+        )
+
+    errors: List[ChallengeDataError] = []
+    if "category_id" in sent:
+        sent["category_id"] = _existing_category_id(db, sent["category_id"], errors)
+    validated = None
+    if data_edits:
+        try:
+            validated = _validate_edit(challenge, sent, storage, max_media_archive_bytes)
+        except InvalidChallengeData as exc:
+            errors.extend(exc.errors)
+    if errors:
+        return _invalid(errors)
+
+    if "title" in sent and db.query(Challenge).filter(
+        Challenge.title == sent["title"], Challenge.id != challenge.id
+    ).first():
+        raise HTTPException(status_code=409, detail=f"A Challenge titled {sent['title']!r} already exists.")
+
+    # Files are written over the existing keys so public URLs stay stable.
+    if "inputs_file" in sent:
+        _put(storage, challenge.inputs_key, inputs_file.file, "application/jsonl")
+    if "ground_truth_file" in sent:
+        _put(storage, challenge.ground_truth_key, ground_truth_file.file, "application/jsonl")
+    if "media_archive_file" in sent:
+        challenge.media_archive_key = challenge.media_archive_key or public_key(
+            "challenges", str(challenge.id), "media.zip"
+        )
+        _put(storage, challenge.media_archive_key, media_archive_file.file, "application/zip")
+
+    for name in ("title", "category_id", "image_uri", "description", "status"):
+        if name in sent:
+            setattr(challenge, name, sent[name])
+    if validated is not None:
+        challenge.scorer_name = validated.scorer["name"]
+        challenge.scorer_label = validated.scorer["label"]
+        challenge.direction = validated.scorer["direction"]
+        challenge.scorer_params = validated.params
+        challenge.package_version = scorer_catalogue.PACKAGE_VERSION
+    # New content, so a fresh round of sync attempts.
+    challenge.sync_status = SYNC_PENDING
+    challenge.sync_attempts = 0
+    challenge.last_sync_error = None
+    try:
+        db.commit()
+    except IntegrityError:
         db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        logging.error(f"Unexpected error updating challenge {challenge_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(status_code=409, detail=f"A Challenge titled {sent.get('title')!r} already exists.")
+    db.refresh(challenge)
+    return challenge
+
+
+def _existing_category_id(db: Session, value: str, errors: List[ChallengeDataError]) -> Optional[UUID]:
+    try:
+        category_id = UUID(value)
+    except ValueError:
+        errors.append(ChallengeDataError("category_id", f"{value!r} is not a UUID"))
+        return None
+    if db.get(models.Category, category_id) is None:
+        errors.append(ChallengeDataError("category_id", f"no category with id {category_id}"))
+    return category_id
+
+
+def _validate_edit(challenge: Challenge, sent: dict, storage: ObjectStorage, max_media_archive_bytes: int):
+    """Validate the Challenge as it would be after the edit: the sent files and
+    Scorer settings, and the stored ones for whatever was not sent."""
+    new_scorer_name = sent.get("scorer_name", challenge.scorer_name)
+    if "scorer_params" in sent:
+        params = sent["scorer_params"]
+    elif new_scorer_name == challenge.scorer_name:
+        params = challenge.scorer_params
+    else:
+        params = None  # another Scorer: its defaults, not the old Scorer's parameters
+
+    def file_or_stored(field: str, key: str) -> bytes:
+        if field in sent:
+            return sent[field].file.read()
+        return storage.get(key)
+
+    if "media_archive_file" in sent:
+        media_archive = sent["media_archive_file"].file
+    elif challenge.media_archive_key:
+        # The port has no streaming read, so the stored archive is held in memory.
+        media_archive = io.BytesIO(storage.get(challenge.media_archive_key))
+    else:
+        media_archive = None
+
+    return validate_challenge_data(
+        inputs=file_or_stored("inputs_file", challenge.inputs_key),
+        ground_truth=file_or_stored("ground_truth_file", challenge.ground_truth_key),
+        scorer_name=new_scorer_name,
+        scorer_params=params,
+        media_archive=media_archive,
+        max_media_archive_bytes=max_media_archive_bytes,
+    )
+
+
+def _put(storage: ObjectStorage, key: str, body, content_type: str) -> None:
+    body.seek(0)
+    storage.put(key, body, content_type=content_type)
+
 
 # for deleting a challenge
 
