@@ -107,7 +107,7 @@ class SubmissionError:
 class SubmissionRejected(ValueError):
     """The Submission was refused and nothing stored. ``errors`` lists why."""
 
-    def __init__(self, errors: List[SubmissionError]):
+    def __init__(self, errors: List[SubmissionError]) -> None:
         self.errors = list(errors)
         super().__init__("; ".join(f"{e.field}: {e.message}" for e in self.errors))
 

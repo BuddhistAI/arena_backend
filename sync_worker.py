@@ -165,7 +165,7 @@ class SyncWorker:
             Submission.challenge_id == challenge.id,
             Submission.status == SubmissionStatus.COMPLETED,
             Submission.sync_status == SyncStatus.PENDING,
-            Submission.deleted_at.is_(None),
+            Submission.is_live,
         )
         for submission in waiting:
             submission.record_failed_sync()
@@ -203,7 +203,7 @@ class SyncWorker:
             .filter(
                 Submission.challenge_id == challenge.id,
                 Submission.status == SubmissionStatus.COMPLETED,
-                Submission.deleted_at.is_(None),
+                Submission.is_live,
             )
             .order_by(Submission.created_at, Submission.id)
             .all()

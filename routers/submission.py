@@ -33,14 +33,8 @@ router = APIRouter(prefix="/submissions", tags=["submissions"])
 db_dependency = Annotated[Session, Depends(get_db)]
 
 
-def _live_submissions(db: Session):
-    """Submissions that were not deleted: a deleted Submission is gone from
-    the API (see ``Submission.deleted_at``)."""
-    return db.query(models.Submission).filter(models.Submission.deleted_at.is_(None))
-
-
 def _live_submission_or_404(db: Session, submission_id: uuid.UUID) -> models.Submission:
-    submission = _live_submissions(db).filter(models.Submission.id == submission_id).one_or_none()
+    submission = models.Submission.live(db).filter(models.Submission.id == submission_id).one_or_none()
     if submission is None:
         raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
     return submission
@@ -53,7 +47,7 @@ def list_all_submissions(
     challenge_id: Optional[uuid.UUID] = Query(None, description="Only this Challenge's Submissions"),
 ) -> List[models.Submission]:
     """List every user's Submissions (admin only), optionally of one Challenge."""
-    submissions = _live_submissions(db)
+    submissions = models.Submission.live(db)
     if challenge_id is not None:
         submissions = submissions.filter(models.Submission.challenge_id == challenge_id)
     return submissions.all()
@@ -62,9 +56,9 @@ def list_all_submissions(
 async def list_my_submissions(
     db: db_dependency,
     current_user: User = Depends(get_current_active_user)
-):
+) -> List[models.Submission]:
     """List submissions created by the current authenticated user."""
-    return _live_submissions(db).filter(models.Submission.user_id == current_user.id).all()
+    return models.Submission.live(db).filter(models.Submission.user_id == current_user.id).all()
 
 @router.get("/preferred-models", response_model=List[str])
 def list_preferred_models(db: db_dependency) -> List[str]:
@@ -76,7 +70,7 @@ def list_preferred_models(db: db_dependency) -> List[str]:
     """
     rows = (
         db.query(models.Submission.preferred_model)
-        .filter(models.Submission.preferred_model.isnot(None), models.Submission.deleted_at.is_(None))
+        .filter(models.Submission.preferred_model.isnot(None), models.Submission.is_live)
         .distinct()
         .order_by(models.Submission.preferred_model)
         .all()
@@ -84,14 +78,17 @@ def list_preferred_models(db: db_dependency) -> List[str]:
     return [preferred_model for (preferred_model,) in rows]
 
 @router.get("/{submission_id}", response_model=SubmissionRead)
-async def get_submission(db: db_dependency, submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION)):
+async def get_submission(
+    db: db_dependency, submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION)
+) -> models.Submission:
+    """Read a Submission that was not deleted."""
     return _live_submission_or_404(db, submission_id)
 
 @router.get("/{submission_id}/status", response_model=SubmissionStatusResponse)
 async def get_submission_status(
     db: db_dependency, 
     submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION)
-):
+) -> models.Submission:
     """
     Get where a Submission is in scoring, to poll after creating it.
 
@@ -118,7 +115,7 @@ def resync_submission(
     db: db_dependency,
     current_user: User = Depends(require_admin),
     submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION),
-):
+) -> models.Submission:
     """
     Resync a Submission (admin only): set its sync status to ``pending`` and
     queue a sync of its Challenge, which rebuilds the Challenge Repo, this

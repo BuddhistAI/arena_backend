@@ -1,5 +1,5 @@
 from fastapi import APIRouter, status, HTTPException, Depends, Path, Body
-from typing import Annotated, List
+from typing import Annotated, List, Optional
 from sqlalchemy.orm import Session
 from database import get_db
 from schemas.result import ResultCreate, ResultRead, ResultReadNested, ResultReadWithChallenge
@@ -31,14 +31,10 @@ def _refuse_deleted_challenge(db: Session, challenge_id: uuid.UUID) -> None:
         raise HTTPException(status_code=404, detail="Challenge not found")
 
 
-def _live_submission(db: Session, submission_id: uuid.UUID):
+def _live_submission(db: Session, submission_id: uuid.UUID) -> Optional[Submission]:
     """The Submission, or None when it does not exist or was deleted: a
     deleted Submission's results are off the leaderboard."""
-    return (
-        db.query(Submission)
-        .filter(Submission.id == submission_id, Submission.deleted_at.is_(None))
-        .first()
-    )
+    return Submission.live(db).filter(Submission.id == submission_id).first()
 
 
 @router.get("/challenge/{challenge_id}", response_model=List[ResultReadNested], status_code=status.HTTP_200_OK)
@@ -49,11 +45,7 @@ async def get_results_by_challenge(
     """Get all results for a specific challenge"""
     _refuse_deleted_challenge(db, challenge_id)
     # Get all submissions for the challenge
-    submissions = (
-        db.query(Submission)
-        .filter(Submission.challenge_id == challenge_id, Submission.deleted_at.is_(None))
-        .all()
-    )
+    submissions = Submission.live(db).filter(Submission.challenge_id == challenge_id).all()
     
     if not submissions:
         return []
@@ -253,11 +245,7 @@ async def debug_challenge_data(
     challenge = db.query(Challenge).filter(Challenge.id == challenge_id).first()
     
     # Get submissions
-    submissions = (
-        db.query(Submission)
-        .filter(Submission.challenge_id == challenge_id, Submission.deleted_at.is_(None))
-        .all()
-    )
+    submissions = Submission.live(db).filter(Submission.challenge_id == challenge_id).all()
     
     # Get all results
     all_results = db.query(Result).all()
@@ -288,7 +276,7 @@ async def debug_all_data(db: db_dependency):
     from models.challenge import Challenge
     
     challenges = db.query(Challenge).all()
-    submissions = db.query(Submission).filter(Submission.deleted_at.is_(None)).all()
+    submissions = Submission.live(db).all()
     results = db.query(Result).all()
     
     return {

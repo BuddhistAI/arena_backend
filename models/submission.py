@@ -1,5 +1,8 @@
 from sqlalchemy import Column, String, DateTime, Float, ForeignKey, Enum, JSON, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.ext.hybrid import hybrid_property
+from sqlalchemy.orm import Query, Session
+from sqlalchemy.sql.elements import ColumnElement
 from database import Base
 from models.challenge import SyncStatus, _one_of
 import datetime
@@ -63,6 +66,27 @@ class Submission(Base):
     deleted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     updated_at = Column(DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    @hybrid_property
+    def is_live(self) -> bool:
+        """Not deleted; usable in queries as ``filter(Submission.is_live)``."""
+        return self.deleted_at is None
+
+    @is_live.expression
+    def is_live(cls) -> ColumnElement[bool]:
+        return cls.deleted_at.is_(None)
+
+    @classmethod
+    def live(cls, db: Session) -> "Query[Submission]":
+        """The Submissions that were not deleted, the only ones the API shows.
+
+        Args:
+            db: Database session.
+
+        Returns:
+            A query of the live Submissions, to filter further.
+        """
+        return db.query(cls).filter(cls.is_live)
 
     def mark_synced(self, repo_path: str) -> None:
         """The Submission's folder is in the Challenge Repo at ``repo_path``."""
