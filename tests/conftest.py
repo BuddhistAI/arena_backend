@@ -162,7 +162,14 @@ def client(app, storage, repo_host, submission_queue, clock):
             raise HTTPException(status_code=401, detail="Authentication failed")
         return user
 
+    def optional_user_by_id(
+        credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer(auto_error=False)),
+        db=Depends(get_db),
+    ):
+        return None if credentials is None else authenticate_by_user_id(credentials, db)
+
     app.dependency_overrides[auth.authenticate] = authenticate_by_user_id
+    app.dependency_overrides[auth.get_optional_user] = optional_user_by_id
     app.dependency_overrides[get_object_storage] = lambda: storage
     app.dependency_overrides[get_repo_host] = lambda: repo_host
     app.dependency_overrides[get_submission_queue] = lambda: submission_queue

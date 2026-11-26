@@ -180,7 +180,7 @@ def test_a_submission_that_failed_scoring_is_never_published(
 
     repo = next(iter(repo_host.repos))
     assert submission_folders(repo_host, repo) == []
-    assert read(client, response.json()["id"])["repo_path"] is None
+    assert read(client, response.json()["id"], headers_for(participant))["repo_path"] is None
 
 
 def test_a_later_challenge_sync_keeps_the_published_submissions(

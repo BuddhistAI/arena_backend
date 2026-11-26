@@ -194,6 +194,18 @@ def authenticate(
         )
 
 
+def get_optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    db: Session = Depends(get_db),
+) -> Optional[User]:
+    """For endpoints anyone may call that show more to some users: the
+    signed-in user, or None when the request has no bearer token. A token
+    that does not verify still answers 401."""
+    if credentials is None:
+        return None
+    return authenticate(credentials, db)
+
+
 # Alias for backward compatibility with existing code
 get_current_user = authenticate
 get_current_active_user = authenticate

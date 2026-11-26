@@ -45,13 +45,22 @@ def test_a_valid_model_submission_is_accepted_as_pending(client, headers_for, pa
     assert response.status_code == 202, response.text
     body = response.json()
     assert body["status"] == "pending"
-    assert client.get(f"/submissions/{body['id']}").json()["status"] == "pending"
+    assert read(client, body["id"], headers_for(participant))["status"] == "pending"
 
 
-def read(client, submission_id):
-    response = client.get(f"/submissions/{submission_id}")
+def read(client, submission_id, headers=None):
+    """The Submission's detail, as ``headers`` sign in (anonymous by default:
+    an unscored Submission needs its submitter's or an admin's)."""
+    response = client.get(f"/submissions/{submission_id}", headers=headers or {})
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def own(client, headers, response):
+    """The just-made Submission of ``response`` as its submitter's own listing
+    shows it, which includes the internal model reference."""
+    [submission] = [s for s in client.get("/submissions/my", headers=headers).json() if s["id"] == response.json()["id"]]
+    return submission
 
 
 def test_a_model_submission_is_scored_by_the_challenges_scorer(
@@ -89,7 +98,7 @@ def test_a_model_submission_reads_back_its_type_name_and_link(client, headers_fo
         name="Whisper large-v3", model_link="https://huggingface.co/openai/whisper-large-v3",
     )
 
-    submission = read(client, response.json()["id"])
+    submission = read(client, response.json()["id"], headers_for(participant))
     assert submission["type"] == "model"
     assert submission["name"] == "Whisper large-v3"
     assert submission["model_link"] == "https://huggingface.co/openai/whisper-large-v3"
@@ -308,7 +317,7 @@ def test_the_predictions_file_is_stored_privately_byte_for_byte(
     [key] = set(storage.objects) - stored_before
     assert key.startswith(PRIVATE_PREFIX)
     assert storage.objects[key] == predictions
-    assert key not in str(read(client, submission_id))
+    assert key not in str(read(client, submission_id, headers_for(participant)))
 
 
 def test_the_first_stored_submission_locks_the_challenge(client, headers_for, participant, challenge, clock):
@@ -360,7 +369,7 @@ def test_a_scorer_error_fails_the_submission_with_the_message(
 
     submission_worker.drain()
 
-    submission = read(client, response.json()["id"])
+    submission = read(client, response.json()["id"], headers_for(participant))
     assert submission["status"] == "failed"
     assert "invalid span" in submission["status_message"]
     assert submission["headline_metric"] is None
@@ -380,7 +389,7 @@ def test_a_predictions_file_missing_from_storage_fails_only_its_submission(
 
     submission_worker.drain()
 
-    assert read(client, lost)["status"] == "failed"
+    assert read(client, lost, headers_for(participant))["status"] == "failed"
     assert read(client, scored)["status"] == "completed"
 
 
@@ -401,9 +410,9 @@ def test_model_submissions_with_the_same_name_share_one_model(
     and a new name creates a new model."""
     other = make_user("user", name="other")
 
-    first = read(client, submit(client, headers_for(participant), challenge, name="Google Vision OCR").json()["id"])
-    again = read(client, submit(client, headers_for(other), challenge, name="Google Vision OCR").json()["id"])
-    new = read(client, submit(client, headers_for(participant), challenge, name="Tesseract 5").json()["id"])
+    first = own(client, headers_for(participant), submit(client, headers_for(participant), challenge, name="Google Vision OCR"))
+    again = own(client, headers_for(other), submit(client, headers_for(other), challenge, name="Google Vision OCR"))
+    new = own(client, headers_for(participant), submit(client, headers_for(participant), challenge, name="Tesseract 5"))
 
     assert first["model_id"] == again["model_id"]
     assert new["model_id"] != first["model_id"]

@@ -133,6 +133,29 @@ def read_leaderboard(
     )
 
 
+def read_rank(db: Session, submission: Submission) -> Optional[int]:
+    """A Submission's Rank on its Challenge's Leaderboard, the same Rank the
+    Leaderboard shows it at.
+
+    Args:
+        db: Database session.
+        submission: The Submission.
+
+    Returns:
+        Its Rank, or None when it is not on the Leaderboard (not scored, or deleted).
+    """
+    ranked = _ranked(submission.challenge).subquery()
+    return db.execute(
+        select(ranked.c.rank).where(ranked.c.submission_id == submission.id)
+    ).scalar_one_or_none()
+
+
+def read_scorer(challenge: Challenge) -> LeaderboardScorer:
+    """The Scorer block of the Challenge's Leaderboard: what its Submissions
+    are ranked by and how their numbers are shown."""
+    return _scorer(challenge)
+
+
 def _counts(db: Session, ranked: Subquery) -> dict[str, int]:
     """Rows of the whole Leaderboard, in all and per Submission Type."""
     per_type = dict(db.execute(select(ranked.c.type, func.count()).group_by(ranked.c.type)).all())

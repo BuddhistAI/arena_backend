@@ -8,17 +8,19 @@ from database import get_db
 from schemas.submission import (
     DailyLimitResponse,
     SubmissionCreatedResponse,
+    SubmissionDetailRead,
     SubmissionRead,
     SubmissionStatusResponse,
 )
 from ports.clock import Clock, get_clock
 from ports.object_storage import ObjectStorage, get_object_storage
 from service.daily_limit import DailyLimitReached
+from service.submission_detail import SubmissionDetail, SubmissionGone, SubmissionNotFound, read_submission_detail
 from service.submission_deletion import delete_submission as delete_submission_and_files
 from service.submission_intake import SubmissionForm, SubmissionIntake, SubmissionRejected
 from submission_worker import SubmissionQueue, get_queue_stats, get_submission_queue
 from submission_cache import get_cache_stats
-from auth import get_current_active_user, require_admin
+from auth import get_current_active_user, get_optional_user, require_admin
 from models.submission import SubmissionStatus
 import datetime
 import math
@@ -27,6 +29,7 @@ import uuid
 # Constants for repeated strings
 SUBMISSION_ID_PATH_DESCRIPTION = "This is the ID of the submission"
 SUBMISSION_NOT_FOUND_MESSAGE = "Submission not found"
+SUBMISSION_DELETED_MESSAGE = "This Submission was deleted"
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
@@ -77,12 +80,32 @@ def list_preferred_models(db: db_dependency) -> List[str]:
     )
     return [preferred_model for (preferred_model,) in rows]
 
-@router.get("/{submission_id}", response_model=SubmissionRead)
-async def get_submission(
-    db: db_dependency, submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION)
-) -> models.Submission:
-    """Read a Submission that was not deleted."""
-    return _live_submission_or_404(db, submission_id)
+@router.get(
+    "/{submission_id}",
+    response_model=SubmissionDetailRead,
+    responses={
+        404: {"description": "No Submission has that id, or it is not scored and not yours."},
+        410: {"description": "The Submission was deleted."},
+    },
+)
+def get_submission(
+    db: db_dependency,
+    viewer: Optional[User] = Depends(get_optional_user),
+    storage: ObjectStorage = Depends(get_object_storage),
+    submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION),
+) -> SubmissionDetail:
+    """
+    Everything public about a Submission, for its detail page. A scored
+    Submission is public; one pending, processing or failed is shown only
+    to its submitter and admins, with its status and message. Per-item
+    scores are never returned, only the Scorer's Public Summary.
+    """
+    try:
+        return read_submission_detail(db, storage, submission_id, viewer=viewer)
+    except SubmissionNotFound:
+        raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
+    except SubmissionGone:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail=SUBMISSION_DELETED_MESSAGE)
 
 @router.get("/{submission_id}/status", response_model=SubmissionStatusResponse)
 async def get_submission_status(

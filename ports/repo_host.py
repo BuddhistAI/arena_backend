@@ -124,6 +124,12 @@ def challenge_repo_url(repo_name: str) -> str:
     return f"https://github.com/{owner}/{repo_name}"
 
 
+def challenge_repo_folder_url(repo_name: str, folder: str) -> str:
+    """Public GitHub URL of ``folder`` in the Challenge Repo ``repo_name``, on
+    its default branch."""
+    return f"{challenge_repo_url(repo_name)}/tree/HEAD/{folder}"
+
+
 @lru_cache()
 def _github_app_repo_host() -> RepoHost:
     from ports.github_app_repo_host import GitHubAppRepoHost
