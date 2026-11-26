@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -217,26 +218,10 @@ class SubmissionIntake:
         """Store the Predictions File and the Artifact, then save the row and
         Lock the Challenge in one commit. If the commit fails the stored
         objects are deleted."""
-        submission_id = new_submission_id()
-        stash = Stash(storage=self.storage, submission_id=submission_id)
-        key = stash.put("predictions.jsonl", form.predictions, content_type="application/jsonl")
-        now = self.clock()
+        stash = Stash(storage=self.storage, submission_id=new_submission_id())
         try:
-            submission = Submission(
-                id=submission_id,
-                user_id=user.id,
-                challenge_id=challenge.id,
-                type=form.type,
-                name=form.name,
-                description=form.description,
-                predictions_url=key,
-                status=SubmissionStatus.PENDING,
-                created_at=now,
-                updated_at=now,
-                **type_intake.columns(self.db, user, form, stash),
-            )
-            if challenge.locked_at is None:
-                challenge.locked_at = now
+            submission = self._new_row(challenge, user, form, type_intake, stash)
+            _lock(challenge, submission.created_at)
             self.db.add(submission)
             self.db.commit()
         except SQLAlchemyError:
@@ -245,6 +230,31 @@ class SubmissionIntake:
             raise
         self.db.refresh(submission)
         return submission
+
+    def _new_row(
+        self, challenge: Challenge, user: User, form: SubmissionForm, type_intake: TypeIntake, stash: Stash
+    ) -> Submission:
+        """The ``pending`` Submission, its Predictions File and Artifact stored through ``stash``."""
+        now = self.clock()
+        return Submission(
+            id=stash.submission_id,
+            user_id=user.id,
+            challenge_id=challenge.id,
+            type=form.type,
+            name=form.name,
+            description=form.description,
+            predictions_url=stash.put("predictions.jsonl", form.predictions, content_type="application/jsonl"),
+            status=SubmissionStatus.PENDING,
+            created_at=now,
+            updated_at=now,
+            **type_intake.columns(self.db, user, form, stash),
+        )
+
+
+def _lock(challenge: Challenge, at: datetime) -> None:
+    """Lock the Challenge at its first Submission; later ones keep the time."""
+    if challenge.locked_at is None:
+        challenge.locked_at = at
 
 
 def _cleaned(form: SubmissionForm) -> SubmissionForm:

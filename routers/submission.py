@@ -1,6 +1,6 @@
 from fastapi import APIRouter, status, HTTPException, Depends, Path, Query, UploadFile, File, Form
 from fastapi.responses import JSONResponse
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Optional, Union
 from sqlalchemy.orm import Session
 import models
 from models.user import User
@@ -162,6 +162,66 @@ def delete_submission(
 
 
 # ******** create a submission ********
+def submission_form(
+    submission_type: str = Form(..., alias="type", description="Submission Type: model, prompt or skill"),
+    name: str = Form("", description="Name of the Submission; for a Model, the model name (reused or created)"),
+    description: str = Form("", description="Description of the Submission; for a Prompt or Skill, how to run it"),
+    model_link: Optional[str] = Form(None, description="Model only: optional https link to the model"),
+    preferred_model: Optional[str] = Form(None, description="Prompt or Skill: the exact model id it was run with"),
+    license_: Optional[str] = Form(
+        None, alias="license", description="Prompt or Skill: CC-BY-4.0, CC0-1.0, MIT or Apache-2.0"
+    ),
+    prompt_text: Optional[str] = Form(None, description="Prompt only: the prompt, typed (or send prompt_file)"),
+    prompt_file: Optional[UploadFile] = File(None, description="Prompt only: the prompt as a text file"),
+    skill_file: Optional[UploadFile] = File(
+        None, description="Skill only: the skill as a zip (any layout; safety-checked, never extracted here)"
+    ),
+    predictions_file: UploadFile = File(..., description="Predictions File: JSONL {id, prediction} rows, one per Input id"),
+) -> SubmissionForm:
+    """The multipart form of a Submission, as the intake takes it (a FastAPI dependency).
+
+    Returns:
+        The form fields, with the uploaded files read into bytes.
+    """
+    return SubmissionForm(
+        type=submission_type,
+        name=name,
+        description=description,
+        model_link=model_link,
+        preferred_model=preferred_model,
+        license=license_,
+        prompt_text=prompt_text,
+        prompt_file=_read(prompt_file),
+        skill_file=_read(skill_file),
+        predictions=predictions_file.file.read(),
+    )
+
+
+def _read(upload: Optional[UploadFile]) -> Optional[bytes]:
+    return upload.file.read() if upload is not None else None
+
+
+def submission_intake(
+    db: db_dependency,
+    storage: ObjectStorage = Depends(get_object_storage),
+    submission_queue: SubmissionQueue = Depends(get_submission_queue),
+    clock: Clock = Depends(get_clock),
+) -> SubmissionIntake:
+    """The Submission intake, wired to the request's outside world (a FastAPI dependency)."""
+    return SubmissionIntake(db=db, storage=storage, submission_queue=submission_queue, clock=clock)
+
+
+def _live_challenge_or_404(db: Session, challenge_id: uuid.UUID) -> models.Challenge:
+    challenge = (
+        db.query(models.Challenge)
+        .filter(models.Challenge.id == challenge_id, models.Challenge.deleted_at.is_(None))
+        .one_or_none()
+    )
+    if challenge is None:
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    return challenge
+
+
 @router.post(
     "/create-submission",
     response_model=SubmissionCreatedResponse,
@@ -179,25 +239,11 @@ def delete_submission(
 def create_submission(
     db: db_dependency,
     current_user: User = Depends(get_current_active_user),
-    storage: ObjectStorage = Depends(get_object_storage),
-    submission_queue: SubmissionQueue = Depends(get_submission_queue),
+    intake: SubmissionIntake = Depends(submission_intake),
     clock: Clock = Depends(get_clock),
     challenge_id: uuid.UUID = Form(..., description="ID of the Challenge submitted to"),
-    submission_type: str = Form(..., alias="type", description="Submission Type: model, prompt or skill"),
-    name: str = Form("", description="Name of the Submission; for a Model, the model name (reused or created)"),
-    description: str = Form("", description="Description of the Submission; for a Prompt or Skill, how to run it"),
-    model_link: Optional[str] = Form(None, description="Model only: optional https link to the model"),
-    preferred_model: Optional[str] = Form(None, description="Prompt or Skill: the exact model id it was run with"),
-    license_: Optional[str] = Form(
-        None, alias="license", description="Prompt or Skill: CC-BY-4.0, CC0-1.0, MIT or Apache-2.0"
-    ),
-    prompt_text: Optional[str] = Form(None, description="Prompt only: the prompt, typed (or send prompt_file)"),
-    prompt_file: Optional[UploadFile] = File(None, description="Prompt only: the prompt as a text file"),
-    skill_file: Optional[UploadFile] = File(
-        None, description="Skill only: the skill as a zip (any layout; safety-checked, never extracted here)"
-    ),
-    predictions_file: UploadFile = File(..., description="Predictions File: JSONL {id, prediction} rows, one per Input id"),
-):
+    form: SubmissionForm = Depends(submission_form),
+) -> Union[SubmissionCreatedResponse, JSONResponse]:
     """
     Submit to a Challenge (signed-in users). Every check runs before anything
     is stored; on any problem the answer is 422 with every error. A valid
@@ -205,26 +251,7 @@ def create_submission(
     and is scored in the background with the Challenge's Scorer: poll
     ``GET /submissions/{id}/status``.
     """
-    challenge = (
-        db.query(models.Challenge)
-        .filter(models.Challenge.id == challenge_id, models.Challenge.deleted_at.is_(None))
-        .one_or_none()
-    )
-    if challenge is None:
-        raise HTTPException(status_code=404, detail="Challenge not found")
-    form = SubmissionForm(
-        type=submission_type,
-        name=name,
-        description=description,
-        model_link=model_link,
-        preferred_model=preferred_model,
-        license=license_,
-        prompt_text=prompt_text,
-        prompt_file=prompt_file.file.read() if prompt_file is not None else None,
-        skill_file=skill_file.file.read() if skill_file is not None else None,
-        predictions=predictions_file.file.read(),
-    )
-    intake = SubmissionIntake(db=db, storage=storage, submission_queue=submission_queue, clock=clock)
+    challenge = _live_challenge_or_404(db, challenge_id)
     try:
         submission = intake.submit(challenge, current_user, form)
     except DailyLimitReached as exc:
