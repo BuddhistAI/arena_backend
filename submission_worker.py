@@ -18,11 +18,13 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
+from botocore.exceptions import BotoCoreError, ClientError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 import models
 from models.submission import SubmissionStatus
-from ports.object_storage import ObjectStorage
+from ports.object_storage import ObjectNotFound, ObjectStorage
 from service import scorer_catalogue
 
 # Configure logging
@@ -30,6 +32,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 QUEUE_POLL_TIMEOUT_SECONDS = 5
+
+SUBMISSION_ERRORS = (
+    SQLAlchemyError,
+    ObjectNotFound,
+    BotoCoreError,
+    ClientError,
+    scorer_catalogue.ScorerError,
+    ValueError,
+)
+"""What scoring one Submission can raise (database, object storage, Scorer,
+decoding); the worker fails that Submission and keeps going."""
 
 
 @dataclass
@@ -117,7 +130,7 @@ class SubmissionWorker:
                 task = self.submission_queue.tasks.get(timeout=QUEUE_POLL_TIMEOUT_SECONDS)
             except queue.Empty:
                 continue
-            if task is None:  # Shutdown signal
+            if task is None:
                 self.submission_queue.tasks.task_done()
                 break
             self._process_and_mark(task)
@@ -138,7 +151,7 @@ class SubmissionWorker:
         db = self.session_factory()
         try:
             self._process(db, task.submission_id)
-        except Exception as e:  # the worker must outlive any one Submission
+        except SUBMISSION_ERRORS as e:
             logger.exception("Worker %s: unexpected error scoring %s", self.worker_id, task.submission_id)
             db.rollback()
             self._fail(db, task.submission_id, f"Unexpected processing error: {e}")

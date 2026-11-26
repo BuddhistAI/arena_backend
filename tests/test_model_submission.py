@@ -356,6 +356,23 @@ def test_a_scorer_error_fails_the_submission_with_the_message(
     assert submission["score_details"] is None
 
 
+def test_a_predictions_file_missing_from_storage_fails_only_its_submission(
+    client, headers_for, participant, challenge, storage, submission_worker
+):
+    """When a Submission's Predictions File is gone from storage, scoring marks
+    it ``failed`` and the worker goes on to score the next Submission."""
+    stored_before = set(storage.objects)
+    lost = submit(client, headers_for(participant), challenge).json()["id"]
+    [key] = set(storage.objects) - stored_before
+    storage.delete(key)
+    scored = submit(client, headers_for(participant), challenge).json()["id"]
+
+    submission_worker.drain()
+
+    assert read(client, lost)["status"] == "failed"
+    assert read(client, scored)["status"] == "completed"
+
+
 def test_a_submission_that_fails_scoring_still_locks_the_challenge(
     client, headers_for, participant, span_challenge, submission_worker
 ):
