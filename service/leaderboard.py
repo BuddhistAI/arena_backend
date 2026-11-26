@@ -128,7 +128,7 @@ def read_leaderboard(
     total = db.execute(select(func.count()).select_from(shown.subquery())).scalar_one()
     shown = shown.order_by(ranked.c.rank).offset((page - 1) * limit).limit(limit)
     return Leaderboard(
-        scorer=_scorer(challenge),
+        scorer=read_scorer(challenge),
         counts=_counts(db, ranked),
         total=total,
         page=page,
@@ -154,12 +154,6 @@ def read_rank(db: Session, submission: Submission) -> Optional[int]:
     ).scalar_one_or_none()
 
 
-def read_scorer(challenge: Challenge) -> LeaderboardScorer:
-    """The Scorer block of the Challenge's Leaderboard: what its Submissions
-    are ranked by and how their numbers are shown."""
-    return _scorer(challenge)
-
-
 def _counts(db: Session, ranked: Subquery) -> dict[str, int]:
     """Rows of the whole Leaderboard, in all and per Submission Type."""
     per_type = dict(db.execute(select(ranked.c.type, func.count()).group_by(ranked.c.type)).all())
@@ -167,8 +161,16 @@ def _counts(db: Session, ranked: Subquery) -> dict[str, int]:
     return {"all": sum(counts.values()), **counts}
 
 
-def _scorer(challenge: Challenge) -> LeaderboardScorer:
-    # Read live from the registry: a Scorer name never changes meaning (ADR 0001).
+def read_scorer(challenge: Challenge) -> LeaderboardScorer:
+    """The Scorer block of the Challenge's Leaderboard, read live from the
+    registry: a Scorer name never changes meaning (ADR 0001).
+
+    Args:
+        challenge: The Challenge whose Scorer to describe.
+
+    Returns:
+        What its Submissions are ranked by and how their numbers are shown.
+    """
     described = scorer_catalogue.describe_scorer(challenge.scorer_name)
     return LeaderboardScorer(
         name=challenge.scorer_name,

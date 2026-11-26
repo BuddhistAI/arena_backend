@@ -128,6 +128,7 @@ def test_an_unscored_prompt_or_skill_has_no_download(client, headers_for, partic
 
 
 def test_an_unknown_submission_has_no_download(client):
+    """A Submission id nobody created has nothing to download."""
     assert_no_download(client, "00000000-0000-0000-0000-000000000000")
 
 
@@ -162,6 +163,7 @@ def test_a_prompts_or_skills_detail_links_to_its_download(
 
 
 def test_a_models_detail_has_no_download_url(client, headers_for, participant, challenge, submission_worker, clock):
+    """A Model's detail offers no download: it is found at its own host."""
     submission_id = submit_scored(client, headers_for(participant), challenge, submission_worker, clock)
 
     assert client.get(f"/submissions/{submission_id}").json()["download_url"] is None

@@ -38,6 +38,7 @@ def test_listing_scorers_requires_sign_in(client):
 
 
 def test_each_scorer_says_how_its_headline_metric_is_displayed(client, user_headers):
+    """Each Scorer's display format: a percent or a decimal, with its decimals."""
     scorers = _scorers_by_name(client.get("/scorers", headers=user_headers))
 
     formats = {name: scorer["display_format"] for name, scorer in scorers.items()}
@@ -51,6 +52,8 @@ def test_each_scorer_says_how_its_headline_metric_is_displayed(client, user_head
 
 
 def test_each_scorer_lists_its_public_summary_declaration(client, user_headers):
+    """Each Scorer declares the aggregate numbers it lets the public see, in
+    order; a Scorer may declare none."""
     scorers = _scorers_by_name(client.get("/scorers", headers=user_headers))
 
     assert scorers["cer"]["public_summary"] == [

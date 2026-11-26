@@ -34,8 +34,15 @@ class DownloadNotFound(Exception):
 
 
 def download_path(submission_id: uuid.UUID, submission_type: SubmissionType) -> Optional[str]:
-    """The API path a Submission downloads from, relative to the API root;
-    None for a Model."""
+    """The API path a Submission downloads from.
+
+    Args:
+        submission_id: The Submission.
+        submission_type: Its Submission Type.
+
+    Returns:
+        The path, relative to the API root; None for a Model.
+    """
     if submission_type not in DOWNLOAD_EXTENSIONS:
         return None
     return f"/submissions/{submission_id}/download"

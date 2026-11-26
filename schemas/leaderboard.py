@@ -13,7 +13,7 @@ class LeaderboardRowRead(BaseModel):
     """One ranked Submission on a Leaderboard."""
 
     submission_id: uuid.UUID
-    rank: int = Field(..., description="Position by Headline Metric in the Scorer's Direction; unique per row")
+    rank: int = Field(..., description="Rank by Headline Metric in the Scorer's Direction, the earlier Submission first on a tie; unique per row")
     type: SubmissionType = Field(..., description="Submission Type: model, prompt or skill")
     name: str = Field(..., description="Name of the Submission; for a Model, the model name")
     submitter: str = Field(..., description="The submitter's current public username")
