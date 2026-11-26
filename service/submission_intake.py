@@ -13,7 +13,7 @@ raises ``SubmissionRejected``, whose ``errors`` list every problem found (each
 a ``SubmissionError`` naming the form field, and the line or Input id when
 known); nothing is stored, nothing is counted and the Challenge is not Locked.
 Otherwise it stores the Predictions File and the Artifact (a Prompt as
-markdown) privately, saves the Submission as
+markdown, a Skill as the zip uploaded) privately, saves the Submission as
 ``pending`` (Locking the Challenge if it is the first), and queues it for the
 submission worker to score.
 
@@ -21,8 +21,9 @@ The checks form one ordered pipeline per Submission Type (``TYPE_INTAKES``):
 the form rules every type shares, the type's own form rules, the Predictions
 File against the Challenge's Inputs and Scorer, then the type's Artifact
 rules. Every rule runs, so the participant gets every reason at once. A
-Submission Type without an entry is refused. All Scorer-specific rules go
-through the Scorer catalogue; this module adds no metric logic.
+Skill zip's Artifact rule is the safety check in ``service.skill_zip``. All
+Scorer-specific rules go through the Scorer catalogue; this module adds no
+metric logic.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ from ports.object_storage import ObjectStorage, private_key
 from service import scorer_catalogue
 from service.challenge_data import MAX_REPORTED_ERRORS, line_of
 from service.daily_limit import check_daily_limit
+from service.skill_zip import check_skill_zip
 from submission_worker import SubmissionQueue, SubmissionTask
 
 TYPE_FIELD = "type"
@@ -53,6 +55,7 @@ PREFERRED_MODEL_FIELD = "preferred_model"
 LICENSE_FIELD = "license"
 PROMPT_TEXT_FIELD = "prompt_text"
 PROMPT_FILE_FIELD = "prompt_file"
+SKILL_FILE_FIELD = "skill_file"
 PREDICTIONS_FIELD = "predictions_file"
 
 LICENSES: Tuple[str, ...] = ("CC-BY-4.0", "CC0-1.0", "MIT", "Apache-2.0")
@@ -62,7 +65,8 @@ LICENSES: Tuple[str, ...] = ("CC-BY-4.0", "CC0-1.0", "MIT", "Apache-2.0")
 @dataclass(frozen=True)
 class SubmissionForm:
     """What the participant sent: the form fields, the Artifact and the
-    Predictions File. A Prompt comes as ``prompt_text`` or ``prompt_file``."""
+    Predictions File. A Prompt comes as ``prompt_text`` or ``prompt_file``,
+    a Skill as the zip's bytes in ``skill_file``."""
 
     type: str
     name: str
@@ -73,6 +77,7 @@ class SubmissionForm:
     license: Optional[str] = None
     prompt_text: Optional[str] = None
     prompt_file: Optional[bytes] = None
+    skill_file: Optional[bytes] = None
 
 
 @dataclass(frozen=True)
@@ -249,6 +254,7 @@ def _cleaned(form: SubmissionForm) -> SubmissionForm:
         license=_blank_to_none(form.license),
         prompt_text=form.prompt_text if _blank_to_none(form.prompt_text) else None,
         prompt_file=form.prompt_file or None,
+        skill_file=form.skill_file or None,
     )
 
 
@@ -257,16 +263,12 @@ def _blank_to_none(text: Optional[str]) -> Optional[str]:
 
 
 def _type_intake(submission_type: str) -> TypeIntake:
-    """The pipeline for the type, or a rejection naming why there is none."""
+    """The pipeline for the type, or a rejection if the type is unknown."""
     try:
         known = SubmissionType(submission_type)
     except ValueError:
         choices = ", ".join(t.value for t in SubmissionType)
         raise SubmissionRejected([SubmissionError(TYPE_FIELD, f"must be one of {choices}")]) from None
-    if known not in TYPE_INTAKES:
-        raise SubmissionRejected([
-            SubmissionError(TYPE_FIELD, f"{known.value.capitalize()} Submissions are not accepted yet")
-        ])
     return TYPE_INTAKES[known]
 
 
@@ -372,6 +374,14 @@ def _check_prompt(candidate: Candidate) -> List[SubmissionError]:
     return []
 
 
+def _check_skill_zip(candidate: Candidate) -> List[SubmissionError]:
+    """A Skill zip is given and passes every safety check; its layout is free."""
+    skill_file = candidate.form.skill_file
+    if skill_file is None:
+        return [SubmissionError(SKILL_FILE_FIELD, "is required")]
+    return [SubmissionError(SKILL_FILE_FIELD, problem.message) for problem in check_skill_zip(skill_file)]
+
+
 def _model_columns(db: Session, user: User, form: SubmissionForm, stash: Stash) -> Dict[str, Any]:
     """A Model Submission reuses the model of that name, or creates it."""
     model = create_or_get_model(db, form.name, user.id)
@@ -388,13 +398,22 @@ def _prompt_columns(db: Session, user: User, form: SubmissionForm, stash: Stash)
     }
 
 
+def _skill_columns(db: Session, user: User, form: SubmissionForm, stash: Stash) -> Dict[str, Any]:
+    """A Skill is stored as the zip it was uploaded as."""
+    return {
+        "artifact_url": stash.put("skill.zip", form.skill_file, content_type="application/zip"),
+        "preferred_model": form.preferred_model,
+        "license": form.license,
+    }
+
+
 SHARED_FORM_RULES: Tuple[Rule, ...] = (_required(NAME_FIELD), _required(DESCRIPTION_FIELD))
 
 TYPE_INTAKES: Dict[SubmissionType, TypeIntake] = {
     SubmissionType.MODEL: TypeIntake(
         form_rules=tuple(
             _not_accepted(f, SubmissionType.MODEL)
-            for f in (PREFERRED_MODEL_FIELD, LICENSE_FIELD, PROMPT_TEXT_FIELD, PROMPT_FILE_FIELD)
+            for f in (PREFERRED_MODEL_FIELD, LICENSE_FIELD, PROMPT_TEXT_FIELD, PROMPT_FILE_FIELD, SKILL_FILE_FIELD)
         ),
         artifact_rules=(_check_model_link,),
         columns=_model_columns,
@@ -402,11 +421,22 @@ TYPE_INTAKES: Dict[SubmissionType, TypeIntake] = {
     SubmissionType.PROMPT: TypeIntake(
         form_rules=(
             _not_accepted(MODEL_LINK_FIELD, SubmissionType.PROMPT),
+            _not_accepted(SKILL_FILE_FIELD, SubmissionType.PROMPT),
             _required(PREFERRED_MODEL_FIELD),
             _required(LICENSE_FIELD),
             _check_license,
         ),
         artifact_rules=(_check_prompt,),
         columns=_prompt_columns,
+    ),
+    SubmissionType.SKILL: TypeIntake(
+        form_rules=(
+            *(_not_accepted(f, SubmissionType.SKILL) for f in (MODEL_LINK_FIELD, PROMPT_TEXT_FIELD, PROMPT_FILE_FIELD)),
+            _required(PREFERRED_MODEL_FIELD),
+            _required(LICENSE_FIELD),
+            _check_license,
+        ),
+        artifact_rules=(_check_skill_zip,),
+        columns=_skill_columns,
     ),
 }

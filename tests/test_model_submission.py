@@ -233,15 +233,6 @@ def test_every_problem_is_reported_at_once(client, headers_for, participant, cha
     assert {e["field"] for e in errors} == {"name", "model_link", "predictions_file"}
 
 
-def test_skill_submissions_are_not_accepted_yet(client, headers_for, participant, challenge, assert_rejected):
-    """Only Model and Prompt Submissions are accepted for now."""
-    response = submit(client, headers_for(participant), challenge, type="skill")
-
-    [error] = assert_rejected(response)
-    assert error["field"] == "type"
-    assert "not accepted yet" in error["message"]
-
-
 def test_an_unknown_submission_type_is_rejected(client, headers_for, participant, challenge, assert_rejected):
     """The Submission Type must be model, prompt or skill."""
     response = submit(client, headers_for(participant), challenge, type="dataset")
