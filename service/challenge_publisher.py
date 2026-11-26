@@ -2,10 +2,12 @@
 
 ``challenge_files`` is a function of the Challenge row and the public objects
 in storage only, so a sync and a Resync produce the same files. It never
-reads the Ground Truth.
+reads the Ground Truth. The set is the repo's whole tree (the Sync Worker
+replaces the tree with it), so it includes the template's own files.
 """
 
 import json
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from models.challenge import Challenge
@@ -19,6 +21,18 @@ README_PATH = "README.md"
 INPUTS_PATH = "data/inputs.jsonl"
 SAMPLE_SUBMISSION_PATH = "data/sample_submission.jsonl"
 
+# Files of BuddhistAI/Challenge-template (branch rfc-challenge-repo-layout)
+# that the publisher keeps as they are: repo path -> copy in this package.
+# The .gitignore is stored without its dot so it does not apply here.
+TEMPLATE_DIR = Path(__file__).parent / "challenge_repo_template"
+TEMPLATE_FILES = {
+    ".gitignore": "gitignore",
+    "data/README.md": "data/README.md",
+    "models/README.md": "models/README.md",
+    "prompts/README.md": "prompts/README.md",
+    "skills/README.md": "skills/README.md",
+}
+
 # Larger Inputs are linked from challenge.json instead of committed (GitHub
 # refuses files over 100 MB and warns from 50 MB).
 MAX_COMMITTED_INPUTS_BYTES = 50 * 1024**2
@@ -30,23 +44,29 @@ def challenge_files(
     *,
     max_committed_inputs_bytes: int = MAX_COMMITTED_INPUTS_BYTES,
 ) -> Dict[str, bytes]:
-    """Path -> content of every file the Sync Worker writes to the repo.
-    Inputs larger than ``max_committed_inputs_bytes`` are not among them;
-    ``challenge.json`` links them instead."""
+    """Path -> content of every file in the repo: the template's own files,
+    then the Challenge's. Inputs larger than ``max_committed_inputs_bytes``
+    are not among them; ``challenge.json`` links them instead."""
     inputs = storage.get(challenge.inputs_key)
     input_ids = scorer_catalogue.load_inputs(inputs).keys()
     commit_inputs = len(inputs) <= max_committed_inputs_bytes
     inputs_url = None if commit_inputs else storage.public_url(challenge.inputs_key)
     media_url = storage.public_url(challenge.media_archive_key) if challenge.media_archive_key else None
     definition = challenge_json(challenge, inputs_url=inputs_url, media_url=media_url)
-    files = {
+    files = template_files()
+    files.update({
         CHALLENGE_JSON: _json_bytes(definition),
         README_PATH: readme(definition).encode("utf-8"),
         SAMPLE_SUBMISSION_PATH: sample_predictions_file(challenge.scorer_name, input_ids),
-    }
+    })
     if commit_inputs:
         files[INPUTS_PATH] = inputs
     return files
+
+
+def template_files() -> Dict[str, bytes]:
+    """The template files every Challenge Repo keeps unchanged."""
+    return {path: (TEMPLATE_DIR / source).read_bytes() for path, source in TEMPLATE_FILES.items()}
 
 
 def challenge_json(

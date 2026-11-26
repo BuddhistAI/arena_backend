@@ -14,9 +14,9 @@ A deleted Challenge (``deleted_at`` set) is queued the same way; its attempt
 archives the repo instead of publishing it.
 
 Sync is one way: nothing is read back from the repo host. Each attempt
-creates the repo from the template if it is missing and writes the
-publisher's whole file set in one commit, so a retry or a Resync rebuilds the
-repo from the arena's data.
+creates the repo from the template if it is missing and replaces the repo's
+whole tree with the publisher's file set in one commit, so a retry or a
+Resync rebuilds the repo from the arena's data and drops any other file.
 
 In production ``start_sync_worker`` runs ``run_once`` on a daemon thread.
 Tests call ``drain``, which retries without waiting until nothing is pending.
@@ -166,7 +166,7 @@ class SyncWorker:
             self.repo_host.create_repo_from_template(challenge.repo_name, challenge.title)
         except RepoAlreadyExists:
             pass
-        self.repo_host.write_files(challenge.repo_name, files, COMMIT_MESSAGE)
+        self.repo_host.replace_files(challenge.repo_name, files, COMMIT_MESSAGE)
 
 
 def _describe(exc: Exception) -> str:

@@ -21,9 +21,9 @@ def test_creating_a_repo_twice_is_refused(repo_host):
         repo_host.create_repo_from_template("challenge-x")
 
 
-def test_files_are_written_in_one_commit(repo_host):
+def test_files_replace_the_whole_tree_in_one_commit(repo_host):
     repo_host.create_repo_from_template("challenge-x")
-    repo_host.write_files(
+    repo_host.replace_files(
         "challenge-x",
         {"challenge.json": '{"id": "c1"}', "data/inputs.jsonl": b'{"id": "1"}\n'},
         message="Sync challenge",
@@ -34,11 +34,12 @@ def test_files_are_written_in_one_commit(repo_host):
     assert repo.files["data/inputs.jsonl"] == b'{"id": "1"}\n'
     assert repo.commits[-1].message == "Sync challenge"
     assert set(repo.commits[-1].files) == {"challenge.json", "data/inputs.jsonl"}
+    assert set(repo.files) == {"challenge.json", "data/inputs.jsonl"}  # the template's files are gone
 
 
 def test_writing_to_a_missing_repo_fails(repo_host):
     with pytest.raises(RepoNotFound):
-        repo_host.write_files("challenge-missing", {"a.txt": "a"}, message="m")
+        repo_host.replace_files("challenge-missing", {"a.txt": "a"}, message="m")
 
 
 def test_an_archived_repo_is_marked_archived(repo_host):
@@ -65,7 +66,7 @@ def test_every_kind_of_call_can_be_made_to_fail(repo_host):
     repo_host.fail_next(2)
 
     with pytest.raises(RepoHostError):
-        repo_host.write_files("challenge-x", {"a.txt": "a"}, message="m")
+        repo_host.replace_files("challenge-x", {"a.txt": "a"}, message="m")
     with pytest.raises(RepoHostError):
         repo_host.archive_repo("challenge-x")
 

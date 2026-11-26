@@ -328,3 +328,29 @@ def test_an_edit_after_a_sync_is_published_to_the_same_repo(
     assert repo.files["data/inputs.jsonl"] == new_inputs
     assert len(repo.commits) == 2
     assert read(client, challenge)["sync_status"] == "synced"
+
+
+def test_the_repo_keeps_the_template_layout_and_gitignore(
+    client, admin_headers, category, repo_host, sync_worker
+):
+    created(create_challenge(client, admin_headers, category, title="Tibetan OCR"))
+
+    sync_worker.drain()
+
+    files = repo_host.repos["challenge-tibetan-ocr"].files
+    assert set(files) == {
+        ".gitignore",
+        "README.md",
+        "challenge.json",
+        "data/README.md",
+        "data/inputs.jsonl",
+        "data/sample_submission.jsonl",
+        "models/README.md",
+        "prompts/README.md",
+        "skills/README.md",
+    }
+    assert b"*ground_truth*" in files[".gitignore"]
+    assert files["models/README.md"].startswith(b"# Model submissions\n")
+    assert files["prompts/README.md"].startswith(b"# Prompt submissions\n")
+    assert files["skills/README.md"].startswith(b"# Skill submissions\n")
+    assert b"sample_submission.jsonl" in files["data/README.md"]

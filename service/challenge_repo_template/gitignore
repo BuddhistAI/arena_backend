@@ -1,0 +1,7 @@
+.DS_Store
+__pycache__/
+
+# Never commit private challenge data.
+*ground_truth*
+*groundtruth*
+*predictions*

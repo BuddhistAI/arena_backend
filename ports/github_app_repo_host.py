@@ -109,11 +109,13 @@ class GitHubAppRepoHost:
                 raise RepoAlreadyExists(name)
             raise _error("POST", f"/repos/{self.template}/generate", response)
 
-    def write_files(self, name: str, files: Mapping[str, FileContent], message: str) -> None:
+    def replace_files(self, name: str, files: Mapping[str, FileContent], message: str) -> None:
+        # The new tree has no base_tree, so it holds exactly ``files``: any
+        # other file (dropped from the set, or added by hand) is removed.
         repo = f"/repos/{self.owner}/{name}"
         branch = self._call("GET", repo).json()["default_branch"]
         head_sha = self._head_sha(repo, branch)
-        base_tree = self._call("GET", f"{repo}/git/commits/{head_sha}").json()["tree"]["sha"]
+        head_tree = self._call("GET", f"{repo}/git/commits/{head_sha}").json()["tree"]["sha"]
         entries = []
         for path, content in files.items():
             raw = content.encode("utf-8") if isinstance(content, str) else content
@@ -124,10 +126,8 @@ class GitHubAppRepoHost:
                 ok=(201,),
             ).json()
             entries.append({"path": path, "mode": "100644", "type": "blob", "sha": blob["sha"]})
-        tree = self._call(
-            "POST", f"{repo}/git/trees", json={"base_tree": base_tree, "tree": entries}, ok=(201,)
-        ).json()
-        if tree["sha"] == base_tree:
+        tree = self._call("POST", f"{repo}/git/trees", json={"tree": entries}, ok=(201,)).json()
+        if tree["sha"] == head_tree:
             return  # the repo already holds exactly these files
         commit = self._call(
             "POST",

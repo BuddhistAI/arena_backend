@@ -130,3 +130,20 @@ def test_a_deleted_challenge_cannot_be_resynced(client, admin_headers, category,
     delete(client, challenge, admin_headers)
 
     assert resync(client, challenge, admin_headers).status_code == 404
+
+
+def test_a_resync_rebuilds_the_repo_and_drops_files_added_on_github(
+    client, admin_headers, category, repo_host, sync_worker
+):
+    challenge = created(create_challenge(client, admin_headers, category, title="Tibetan OCR"))
+    sync_worker.drain()
+    repo = repo_host.repos["challenge-tibetan-ocr"]
+    published = dict(repo.files)
+    # Someone edits the repo by hand on GitHub.
+    repo.files["notes/stray.txt"] = b"added by hand\n"
+    repo.files["README.md"] = b"# Edited on GitHub\n"
+
+    resync(client, challenge, admin_headers)
+    sync_worker.drain()
+
+    assert repo.files == published

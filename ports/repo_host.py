@@ -1,5 +1,5 @@
-"""Challenge repo host port: create a repo from the template, write a set of
-files in one commit, archive a repo.
+"""Challenge repo host port: create a repo from the template, replace a repo's
+files with a given set in one commit, archive a repo.
 
 In production ``get_repo_host`` returns the GitHub App implementation
 (``ports.github_app_repo_host``), configured from the environment. Routes
@@ -15,6 +15,7 @@ FileContent = Union[str, bytes]
 
 # Paths a repo generated from BuddhistAI/Challenge-template starts with.
 TEMPLATE_PATHS = (
+    ".gitignore",
     "README.md",
     "challenge.json",
     "data/README.md",
@@ -41,8 +42,9 @@ class RepoHost(Protocol):
         """Create public repo ``name`` from the Challenge template. Raises
         ``RepoAlreadyExists`` if it is already there."""
 
-    def write_files(self, name: str, files: Mapping[str, FileContent], message: str) -> None:
-        """Add or overwrite ``files`` (path -> content) in a single commit."""
+    def replace_files(self, name: str, files: Mapping[str, FileContent], message: str) -> None:
+        """Make ``files`` (path -> content) the repo's whole tree in a single
+        commit: every other file, including any added by hand, is removed."""
 
     def archive_repo(self, name: str) -> None:
         """Make the repo read-only."""
@@ -99,11 +101,11 @@ class InMemoryRepoHost:
         files = {path: b"template\n" for path in TEMPLATE_PATHS}
         self.repos[name] = FakeRepo(name=name, description=description, files=files)
 
-    def write_files(self, name: str, files: Mapping[str, FileContent], message: str) -> None:
+    def replace_files(self, name: str, files: Mapping[str, FileContent], message: str) -> None:
         self._maybe_fail()
         repo = self._repo(name)
         written = {path: _as_bytes(content) for path, content in files.items()}
-        repo.files.update(written)
+        repo.files = dict(written)
         repo.commits.append(Commit(message=message, files=written))
 
     def archive_repo(self, name: str) -> None:
