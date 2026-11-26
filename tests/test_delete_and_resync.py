@@ -85,3 +85,48 @@ def test_a_deleted_challenge_can_be_neither_edited_nor_deleted_again(
 
     assert edit.status_code == 404
     assert delete(client, challenge, admin_headers).status_code == 404
+
+
+def resync(client, challenge, headers):
+    return client.post(f"/challenges/resync/{challenge['id']}", headers=headers)
+
+
+def read(client, challenge):
+    return client.get(f"/challenges/{challenge['id']}").json()
+
+
+def test_a_failed_sync_is_published_after_a_resync(
+    client, admin_headers, category, repo_host, sync_worker
+):
+    challenge = created(create_challenge(client, admin_headers, category, title="Tibetan OCR"))
+    repo_host.fail_next(5, "Bad credentials")
+    sync_worker.drain()
+    assert read(client, challenge)["sync_status"] == "failed"
+
+    response = resync(client, challenge, admin_headers)
+    assert response.status_code == 200, response.text
+    assert (response.json()["sync_status"], response.json()["sync_attempts"]) == ("pending", 0)
+    sync_worker.drain()
+
+    synced = read(client, challenge)
+    assert synced["sync_status"] == "synced"
+    assert synced["last_sync_error"] is None
+    assert "challenge.json" in repo_host.repos["challenge-tibetan-ocr"].files
+
+
+def test_a_non_admin_cannot_resync_a_challenge(
+    client, admin_headers, user_headers, category, repo_host, sync_worker
+):
+    challenge = created(create_challenge(client, admin_headers, category, title="Tibetan OCR"))
+    repo_host.fail_next(5)
+    sync_worker.drain()
+
+    assert resync(client, challenge, user_headers).status_code == 403
+    assert read(client, challenge)["sync_status"] == "failed"
+
+
+def test_a_deleted_challenge_cannot_be_resynced(client, admin_headers, category, sync_worker):
+    challenge = created(create_challenge(client, admin_headers, category, title="Tibetan OCR"))
+    delete(client, challenge, admin_headers)
+
+    assert resync(client, challenge, admin_headers).status_code == 404

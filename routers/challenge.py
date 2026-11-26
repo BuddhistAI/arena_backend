@@ -394,6 +394,34 @@ def _put(storage: ObjectStorage, key: str, body, content_type: str) -> None:
     storage.put(key, body, content_type=content_type)
 
 
+# for resyncing a challenge
+
+@router.post(
+    "/resync/{challenge_id}",
+    response_model=ChallengeRead,
+    status_code=status.HTTP_200_OK,
+    summary="Resync a challenge's repo",
+    responses={403: {"description": "The signed-in user is not an admin."}},
+)
+def resync_challenge(
+    db: db_dependency,
+    current_user: User = Depends(require_admin),
+    challenge_id: UUID = Path(..., description="This is the ID of the challenge to resync"),
+):
+    """
+    Resync a Challenge (admin only): reset its sync attempts and set its sync
+    status to ``pending``. The Sync Worker then rebuilds the repo entirely from
+    the arena's data, creating it if it is missing and replacing every file,
+    so edits made directly on GitHub are overwritten. Typically used after a
+    sync ``failed`` once its cause (``last_sync_error``) is fixed.
+    """
+    challenge = _live_challenge_or_404(db, challenge_id)
+    _queue_sync(challenge)
+    db.commit()
+    db.refresh(challenge)
+    return challenge
+
+
 # for deleting a challenge
 
 @router.delete(
