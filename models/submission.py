@@ -38,6 +38,12 @@ class Submission(Base):
     # Set only for Model Submissions: the model name, shared across Challenges.
     model_id = Column(UUID(as_uuid=True), ForeignKey("model.id"), nullable=True, index=True)
     model_link = Column(String, nullable=True)
+    # Prompt and Skill only. A free-text model id, deliberately not a reference
+    # to a model: it may name a model the arena has never seen.
+    preferred_model = Column(String, nullable=True)
+    license = Column(String, nullable=True)
+    # Private object storage key of the prompt (markdown) or skill zip.
+    artifact_url = Column(String, nullable=True)
     # Private object storage key; Predictions are never published.
     predictions_url = Column(String, nullable=False)
     status = Column(Enum(SubmissionStatus), nullable=False, default=SubmissionStatus.PENDING)

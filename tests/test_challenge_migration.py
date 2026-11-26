@@ -151,4 +151,23 @@ def test_downgrade_from_head_restores_the_previous_submission_table(legacy_datab
 
     columns = {c["name"] for c in inspect(database.engine).get_columns("submission")}
     assert "dataset_url" in columns
-    assert not columns & {"type", "name", "model_link", "predictions_url", "headline_metric", "score_details"}
+    assert not columns & {
+        "type", "name", "model_link", "predictions_url", "headline_metric", "score_details",
+        "preferred_model", "license", "artifact_url",
+    }
+
+
+def test_downgrade_drops_the_prompt_submission_fields(legacy_database, alembic_cfg):
+    """The Prompt fields migration can be undone back to ``c4e8a2b6d1f3``,
+    keeping the Model Submission fields."""
+    from alembic import command
+    from sqlalchemy import inspect
+
+    import database
+
+    command.upgrade(alembic_cfg, "head")
+    command.downgrade(alembic_cfg, "c4e8a2b6d1f3")
+
+    columns = {c["name"] for c in inspect(database.engine).get_columns("submission")}
+    assert "predictions_url" in columns
+    assert not columns & {"preferred_model", "license", "artifact_url"}

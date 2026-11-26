@@ -130,10 +130,16 @@ def create_submission(
     submission_queue: SubmissionQueue = Depends(get_submission_queue),
     clock: Clock = Depends(get_clock),
     challenge_id: uuid.UUID = Form(..., description="ID of the Challenge submitted to"),
-    submission_type: str = Form(..., alias="type", description="Submission Type: model (prompt and skill coming)"),
+    submission_type: str = Form(..., alias="type", description="Submission Type: model or prompt (skill coming)"),
     name: str = Form("", description="Name of the Submission; for a Model, the model name (reused or created)"),
-    description: str = Form("", description="Description of the Submission"),
+    description: str = Form("", description="Description of the Submission; for a Prompt, how to run it"),
     model_link: Optional[str] = Form(None, description="Model only: optional https link to the model"),
+    preferred_model: Optional[str] = Form(None, description="Prompt only: the exact model id it was run with"),
+    license_: Optional[str] = Form(
+        None, alias="license", description="Prompt only: CC-BY-4.0, CC0-1.0, MIT or Apache-2.0"
+    ),
+    prompt_text: Optional[str] = Form(None, description="Prompt only: the prompt, typed (or send prompt_file)"),
+    prompt_file: Optional[UploadFile] = File(None, description="Prompt only: the prompt as a text file"),
     predictions_file: UploadFile = File(..., description="Predictions File: JSONL {id, prediction} rows, one per Input id"),
 ):
     """
@@ -155,6 +161,10 @@ def create_submission(
         name=name,
         description=description,
         model_link=model_link,
+        preferred_model=preferred_model,
+        license=license_,
+        prompt_text=prompt_text,
+        prompt_file=prompt_file.file.read() if prompt_file is not None else None,
         predictions=predictions_file.file.read(),
     )
     intake = SubmissionIntake(db=db, storage=storage, submission_queue=submission_queue, clock=clock)
