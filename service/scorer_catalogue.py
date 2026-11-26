@@ -111,6 +111,11 @@ def validate_predictions(name: str, inputs: Mapping[str, Any], predictions: Mapp
     """Check a Predictions File: exactly one Prediction per Input id, each
     matching the Scorer's Prediction schema.
 
+    Args:
+        name: The Scorer's name.
+        inputs: The Challenge's Inputs, id -> Input (from ``load_inputs``).
+        predictions: The Predictions, id -> Prediction (from ``load_predictions``).
+
     Raises:
         UnknownScorerError: If no Scorer has that name.
         IdMismatchError: If the id sets differ (``missing_ids``/``extra_ids``).
@@ -127,6 +132,13 @@ def score(
     params: Mapping[str, Any],
 ) -> ScoreResult:
     """Score Predictions against the Ground Truth with the named Scorer.
+
+    Args:
+        name: The Scorer's name.
+        inputs: The Challenge's Inputs, id -> Input.
+        references: The Ground Truth, id -> Reference.
+        predictions: The Predictions, id -> Prediction.
+        params: The Scorer's parameters, as stored on the Challenge.
 
     Returns:
         The unrounded Headline Metric and the Scorer's details as JSON values.

@@ -13,12 +13,20 @@ Clock = Callable[[], datetime.datetime]
 
 
 def utc_now() -> datetime.datetime:
-    """Now in naive UTC, like the arena's timestamp columns."""
+    """The system clock.
+
+    Returns:
+        Now in naive UTC, like the arena's timestamp columns.
+    """
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
 
 def get_clock() -> Clock:
-    """FastAPI dependency for the clock port: the system clock."""
+    """FastAPI dependency for the clock port.
+
+    Returns:
+        The system clock, ``utc_now``.
+    """
     return utc_now
 
 

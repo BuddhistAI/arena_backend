@@ -207,7 +207,11 @@ def submission_intake(
     submission_queue: SubmissionQueue = Depends(get_submission_queue),
     clock: Clock = Depends(get_clock),
 ) -> SubmissionIntake:
-    """The Submission intake, wired to the request's outside world (a FastAPI dependency)."""
+    """The Submission intake, wired to the request's outside world (a FastAPI dependency).
+
+    Returns:
+        An intake on the request's session, object storage, queue and clock.
+    """
     return SubmissionIntake(db=db, storage=storage, submission_queue=submission_queue, clock=clock)
 
 

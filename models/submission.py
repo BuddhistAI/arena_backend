@@ -90,7 +90,11 @@ class Submission(Base):
         return db.query(cls).filter(cls.is_live)
 
     def mark_synced(self, repo_path: str) -> None:
-        """The Submission's folder is in the Challenge Repo at ``repo_path``."""
+        """The Submission's folder is in the Challenge Repo at ``repo_path``.
+
+        Args:
+            repo_path: The folder's path in the Challenge Repo.
+        """
         self.sync_status = SyncStatus.SYNCED
         self.repo_path = repo_path
 

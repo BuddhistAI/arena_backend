@@ -80,7 +80,11 @@ class SubmissionQueue:
         self.tasks.task_done()
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get queue statistics"""
+        """Queue statistics, for monitoring.
+
+        Returns:
+            ``total_queued``, ``total_processed`` and the current ``queue_size``.
+        """
         self._stats["queue_size"] = self.tasks.qsize()
         return self._stats.copy()
 
@@ -143,7 +147,11 @@ class SubmissionWorker:
             self.submission_queue.mark_processed()
 
     def process_submission(self, task: SubmissionTask) -> None:
-        """Score one Submission, recording the outcome on it."""
+        """Score one Submission, recording the outcome on it.
+
+        Args:
+            task: The queued Submission to score.
+        """
         db = self.session_factory()
         try:
             self._process(db, task.submission_id)
@@ -207,14 +215,22 @@ _worker_threads: List[threading.Thread] = []
 
 
 def get_submission_queue() -> SubmissionQueue:
-    """FastAPI dependency for the queue that routes put submissions on."""
+    """FastAPI dependency for the queue that routes put submissions on.
+
+    Returns:
+        The process-wide queue the worker threads read.
+    """
     return submission_queue
 
 
 def start_submission_workers(num_workers: int = 2) -> None:
     """Start worker threads that score Submissions from S3. Does nothing (and
     logs why) when object storage is not configured, so the arena still
-    starts without S3 credentials."""
+    starts without S3 credentials.
+
+    Args:
+        num_workers: How many worker threads to start.
+    """
     import database
     from ports.object_storage import get_object_storage
 
