@@ -303,3 +303,28 @@ def test_a_challenge_with_a_tibetan_title_is_published_under_its_fallback_repo_n
     repo = repo_host.repos[challenge["repo_name"]]
     assert json.loads(repo.files["challenge.json"])["title"] == "བོད་ཡིག་ཀློག་པ།"
     assert repo.files["README.md"].decode().startswith("# བོད་ཡིག་ཀློག་པ།\n")
+
+
+def test_an_edit_after_a_sync_is_published_to_the_same_repo(
+    client, admin_headers, category, repo_host, sync_worker
+):
+    challenge = created(create_challenge(client, admin_headers, category, title="Tibetan OCR"))
+    sync_worker.drain()
+    new_inputs = jsonl({"id": "1", "input": "new x"}, {"id": "2", "input": "new y"})
+
+    response = client.patch(
+        f"/challenges/update/{challenge['id']}",
+        data={"title": "Tibetan OCR, revised", "description": "Read the manuscript."},
+        files={"inputs_file": ("inputs.jsonl", new_inputs, "application/jsonl")},
+        headers=admin_headers,
+    )
+    assert response.status_code == 200, response.text
+    sync_worker.drain()
+
+    assert list(repo_host.repos) == ["challenge-tibetan-ocr"]  # the repo keeps its name
+    repo = repo_host.repos["challenge-tibetan-ocr"]
+    definition = json.loads(repo.files["challenge.json"])
+    assert (definition["title"], definition["description"]) == ("Tibetan OCR, revised", "Read the manuscript.")
+    assert repo.files["data/inputs.jsonl"] == new_inputs
+    assert len(repo.commits) == 2
+    assert read(client, challenge)["sync_status"] == "synced"
