@@ -1,4 +1,4 @@
-from fastapi import APIRouter, status, HTTPException, Depends, Path, UploadFile, File, Form
+from fastapi import APIRouter, status, HTTPException, Depends, Path, Query, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from typing import Annotated, List, Optional
 from sqlalchemy.orm import Session
@@ -47,9 +47,16 @@ def _live_submission_or_404(db: Session, submission_id: uuid.UUID) -> models.Sub
 
 # ******** basic endpoints ********
 @router.get("", response_model=List[SubmissionRead])
-async def list_all_submissions(db: db_dependency):
-    """List all submissions (admin only - for now open to all)."""
-    return _live_submissions(db).all()
+def list_all_submissions(
+    db: db_dependency,
+    current_user: User = Depends(require_admin),
+    challenge_id: Optional[uuid.UUID] = Query(None, description="Only this Challenge's Submissions"),
+) -> List[models.Submission]:
+    """List every user's Submissions (admin only), optionally of one Challenge."""
+    submissions = _live_submissions(db)
+    if challenge_id is not None:
+        submissions = submissions.filter(models.Submission.challenge_id == challenge_id)
+    return submissions.all()
 
 @router.get("/my", response_model=List[SubmissionRead])
 async def list_my_submissions(

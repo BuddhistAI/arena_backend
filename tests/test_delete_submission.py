@@ -305,15 +305,17 @@ def test_a_submission_cannot_be_edited(client, headers_for, participant, challen
 
 
 @pytest.mark.parametrize("path", ["/submissions/my", "/submissions"])
-def test_a_deleted_submission_leaves_the_submission_lists(client, headers_for, participant, challenge, path):
-    """The participant's list and the list of all Submissions show the kept
-    Submission and not the deleted one."""
+def test_a_deleted_submission_leaves_the_submission_lists(
+    client, headers_for, admin_headers, participant, challenge, path
+):
+    """The participant's list and the (admin's) list of all Submissions show
+    the kept Submission and not the deleted one."""
     headers = headers_for(participant)
     deleted = submitted(client, headers, challenge)
     kept = submitted(client, headers, challenge)
 
     delete(client, deleted, headers)
 
-    response = client.get(path, headers=headers)
+    response = client.get(path, headers=admin_headers if path == "/submissions" else headers)
     assert response.status_code == 200, response.text
     assert [s["id"] for s in response.json()] == [kept]
