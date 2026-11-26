@@ -437,3 +437,17 @@ def test_counts_leave_out_unscored_and_deleted_submissions(
     submit_skill(client, headers, challenge)
 
     assert leaderboard(client, challenge)["counts"] == {"all": 1, "model": 1, "prompt": 0, "skill": 0}
+
+
+@pytest.mark.parametrize(
+    "params, expected_total",
+    [({}, 5), ({"type": "prompt"}, 2), ({"q": "claude"}, 2), ({"type": "skill", "q": "ocr"}, 1), ({"q": "none"}, 0),
+     ({"page": 3, "limit": 2}, 5)],
+    ids=["all", "type filter", "search", "both", "no match", "paging"],
+)
+def test_total_counts_the_rows_the_filter_and_search_show_across_every_page(
+    client, challenge, mixed_board, params, expected_total
+):
+    """``total`` is how many rows match the type filter and search on all
+    pages together, so a reader knows which page is the last."""
+    assert leaderboard(client, challenge, **params)["total"] == expected_total

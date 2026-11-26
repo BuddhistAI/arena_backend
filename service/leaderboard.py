@@ -72,6 +72,7 @@ class Leaderboard:
 
     scorer: LeaderboardScorer
     counts: dict[str, int]
+    total: int
     page: int
     limit: int
     rows: List[LeaderboardRow]
@@ -99,7 +100,8 @@ def read_leaderboard(
 
     Returns:
         The Scorer block; how many rows the whole Leaderboard holds, in all
-        and per Submission Type, whatever the filter, search and page; the
+        and per Submission Type, whatever the filter, search and page; how
+        many rows the filter and search show on all pages together; the
         page and page size used; and that page's rows in Rank order.
 
     Raises:
@@ -123,10 +125,12 @@ def read_leaderboard(
                 ranked.c.preferred_model.icontains(text, autoescape=True),
             )
         )
+    total = db.execute(select(func.count()).select_from(shown.subquery())).scalar_one()
     shown = shown.order_by(ranked.c.rank).offset((page - 1) * limit).limit(limit)
     return Leaderboard(
         scorer=_scorer(challenge),
         counts=_counts(db, ranked),
+        total=total,
         page=page,
         limit=limit,
         rows=[LeaderboardRow(**row) for row in db.execute(shown).mappings()],

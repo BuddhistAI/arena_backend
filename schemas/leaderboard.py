@@ -58,6 +58,9 @@ class LeaderboardRead(BaseModel):
 
     scorer: LeaderboardScorerRead
     counts: LeaderboardCounts
+    total: int = Field(
+        ..., description="Rows the type filter and search show, on all pages together; the last page holds the last"
+    )
     page: int = Field(..., description="This page's number, from 1")
     limit: int = Field(..., description="Rows per page, after the cap")
     rows: List[LeaderboardRowRead]
