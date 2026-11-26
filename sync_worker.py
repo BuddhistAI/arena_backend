@@ -29,7 +29,7 @@ from typing import Callable, List, Optional
 
 from sqlalchemy.orm import Session
 
-from models.challenge import SYNC_FAILED, SYNC_PENDING, SYNC_SYNCED, Challenge
+from models.challenge import Challenge, SyncStatus
 from ports.object_storage import ObjectStorage
 from ports.repo_host import RepoAlreadyExists, RepoHost, RepoNotFound
 from service.challenge_publisher import MAX_COMMITTED_INPUTS_BYTES, challenge_files
@@ -91,7 +91,7 @@ class SyncWorker:
                 # for the attempt and leaves the Challenge pending again.
                 challenge = (
                     db.query(Challenge)
-                    .filter(Challenge.id == challenge_id, Challenge.sync_status == SYNC_PENDING)
+                    .filter(Challenge.id == challenge_id, Challenge.sync_status == SyncStatus.PENDING)
                     .with_for_update(skip_locked=True)
                     .one_or_none()
                 )
@@ -111,7 +111,7 @@ class SyncWorker:
     def _pending_ids(self, db: Session, respect_backoff: bool) -> List:
         rows = (
             db.query(Challenge.id, Challenge.sync_attempts, Challenge.updated_at)
-            .filter(Challenge.sync_status == SYNC_PENDING)
+            .filter(Challenge.sync_status == SyncStatus.PENDING)
             .order_by(Challenge.updated_at)
             .all()
         )
@@ -139,14 +139,14 @@ class SyncWorker:
             challenge.last_sync_error = _describe(exc)
             challenge.updated_at = self.clock()
             if challenge.sync_attempts >= MAX_ATTEMPTS:
-                challenge.sync_status = SYNC_FAILED
+                challenge.sync_status = SyncStatus.FAILED
             logger.warning(
                 "Sync of Challenge %s (%s) failed, attempt %d of %d: %s",
                 challenge.id, challenge.repo_name, challenge.sync_attempts, MAX_ATTEMPTS,
                 challenge.last_sync_error,
             )
         else:
-            challenge.sync_status = SYNC_SYNCED
+            challenge.sync_status = SyncStatus.SYNCED
             challenge.sync_attempts = 0
             challenge.last_sync_error = None
             action = "Archived the repo of" if challenge.deleted_at is not None else "Synced"

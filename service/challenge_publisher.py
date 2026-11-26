@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from models.challenge import Challenge
+from models.challenge import Challenge, Direction
 from ports.object_storage import ObjectStorage
 from service import scorer_catalogue
 from service.challenge_data import sample_predictions_file
@@ -100,8 +100,8 @@ def challenge_json(
 
 
 DIRECTION_PHRASES = {
-    "lower_is_better": "lower is better",
-    "higher_is_better": "higher is better",
+    Direction.LOWER_IS_BETTER: "lower is better",
+    Direction.HIGHER_IS_BETTER: "higher is better",
 }
 
 
@@ -109,7 +109,7 @@ def readme(definition: Dict[str, Any]) -> str:
     """The repo README, generated from ``challenge.json`` alone."""
     scorer = definition["scorer"]
     data = definition["data"]
-    direction = DIRECTION_PHRASES.get(scorer["direction"], scorer["direction"])
+    direction = DIRECTION_PHRASES[Direction(scorer["direction"])]
     params = json.dumps(scorer["params"], ensure_ascii=False, sort_keys=True)
 
     if data["inputs_url"]:

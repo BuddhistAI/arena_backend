@@ -1,6 +1,8 @@
-from typing import Any, Dict, Literal
+from typing import Any, Dict
 
 from pydantic import BaseModel
+
+from models.challenge import Direction
 
 
 class ScorerRead(BaseModel):
@@ -8,5 +10,5 @@ class ScorerRead(BaseModel):
 
     name: str
     label: str
-    direction: Literal["lower_is_better", "higher_is_better"]
+    direction: Direction
     parameter_schema: Dict[str, Any]

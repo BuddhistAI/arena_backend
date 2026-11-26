@@ -2,6 +2,7 @@ import uuid
 import datetime
 from pydantic import BaseModel, computed_field
 from typing import Any, Dict, Optional
+from models.challenge import Direction, SyncStatus
 from schemas.category import CategoryRead
 
 
@@ -20,12 +21,12 @@ class ChallengeRead(BaseModel):
 
     scorer_name: str
     scorer_params: Dict[str, Any]
-    direction: str
+    direction: Direction
     scorer_label: str
     package_version: str
 
     repo_name: str
-    sync_status: str
+    sync_status: SyncStatus
     sync_attempts: int
     locked_at: Optional[datetime.datetime] = None
 

@@ -2,15 +2,29 @@ from sqlalchemy import Column, String, DateTime, JSON, ForeignKey, Integer, Chec
 from sqlalchemy.dialects.postgresql import UUID
 from database import Base
 import datetime
+import enum
 import uuid
 from sqlalchemy.orm import relationship
 
-SYNC_PENDING = "pending"
-SYNC_SYNCED = "synced"
-SYNC_FAILED = "failed"
-SYNC_STATUSES = (SYNC_PENDING, SYNC_SYNCED, SYNC_FAILED)
 
-DIRECTIONS = ("lower_is_better", "higher_is_better")
+class SyncStatus(str, enum.Enum):
+    """Whether the Challenge Repo matches the arena (see ``sync_worker``)."""
+
+    PENDING = "pending"
+    SYNCED = "synced"
+    FAILED = "failed"
+
+
+class Direction(str, enum.Enum):
+    """Which way a Scorer's scores rank (see GLOSSARY.md)."""
+
+    LOWER_IS_BETTER = "lower_is_better"
+    HIGHER_IS_BETTER = "higher_is_better"
+
+
+def _one_of(column: str, values: type) -> str:
+    """SQL check that ``column`` holds one of the enum's values."""
+    return f"{column} IN ({', '.join(repr(member.value) for member in values)})"
 
 
 class Challenge(Base):
@@ -20,12 +34,8 @@ class Challenge(Base):
     """
     __tablename__ = "challenge"
     __table_args__ = (
-        CheckConstraint(
-            "sync_status IN ('pending', 'synced', 'failed')", name="ck_challenge_sync_status"
-        ),
-        CheckConstraint(
-            "direction IN ('lower_is_better', 'higher_is_better')", name="ck_challenge_direction"
-        ),
+        CheckConstraint(_one_of("sync_status", SyncStatus), name="ck_challenge_sync_status"),
+        CheckConstraint(_one_of("direction", Direction), name="ck_challenge_direction"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, unique=True, nullable=False)
@@ -53,7 +63,9 @@ class Challenge(Base):
 
     # Challenge Repo: `challenge-<slug-of-title>`, fixed at creation.
     repo_name = Column(String, nullable=False, unique=True)
-    sync_status = Column(String, nullable=False, default=SYNC_PENDING, server_default=SYNC_PENDING)
+    sync_status = Column(
+        String, nullable=False, default=SyncStatus.PENDING.value, server_default=SyncStatus.PENDING.value
+    )
     sync_attempts = Column(Integer, nullable=False, default=0, server_default="0")
     last_sync_error = Column(String, nullable=True)
 

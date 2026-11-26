@@ -19,7 +19,7 @@ import re
 import unicodedata
 import uuid
 from datetime import datetime, timezone
-from models.challenge import SYNC_PENDING
+from models.challenge import SyncStatus
 from ports.object_storage import ObjectStorage, get_object_storage, private_key, public_key
 from service import scorer_catalogue
 from service.challenge_data import (
@@ -65,7 +65,7 @@ def _challenge_or_404(db: Session, challenge_id: UUID) -> Challenge:
 
 def _queue_sync(challenge: Challenge) -> None:
     """Leave the Challenge to the Sync Worker with a fresh round of attempts."""
-    challenge.sync_status = SYNC_PENDING
+    challenge.sync_status = SyncStatus.PENDING
     challenge.sync_attempts = 0
     challenge.last_sync_error = None
 
@@ -227,7 +227,7 @@ def create_new_challenge(
         scorer_params=validated.params,
         package_version=scorer_catalogue.PACKAGE_VERSION,
         repo_name=repo_name,
-        sync_status=SYNC_PENDING,
+        sync_status=SyncStatus.PENDING,
         sync_attempts=0,
         **keys,
     )
