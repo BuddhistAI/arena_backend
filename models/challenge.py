@@ -88,6 +88,15 @@ class Challenge(Base):
     # Relationship to Category
     category = relationship("Category", back_populates="challenges")
 
+    def apply_scorer(self, scorer) -> None:
+        """Store a ``service.challenge_data.ValidScorer``: the Scorer, its
+        parameters and the buddhist-eval version they were validated with."""
+        self.scorer_name = scorer.name
+        self.scorer_label = scorer.label
+        self.direction = scorer.direction
+        self.scorer_params = scorer.params
+        self.package_version = scorer.package_version
+
     def queue_sync(self) -> None:
         """Leave the Challenge to the Sync Worker with a fresh round of
         attempts: after a create, an edit, a delete or a Resync."""

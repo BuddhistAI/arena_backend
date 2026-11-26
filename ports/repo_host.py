@@ -1,10 +1,10 @@
 """Challenge repo host port: create a repo from the template, replace a repo's
 files with a given set in one commit, archive a repo.
 
-In production ``get_repo_host`` returns the GitHub App implementation
-(``ports.github_app_repo_host``), configured from the environment. Routes
-take the port with ``Depends(get_repo_host)``; tests override that dependency
-with ``InMemoryRepoHost`` and hand the same fake to the Sync Worker.
+Only the Sync Worker uses it: in production ``start_sync_worker`` gets the
+GitHub App implementation (``ports.github_app_repo_host``), configured from
+the environment, from ``get_repo_host``. Tests hand the worker an
+``InMemoryRepoHost`` instead.
 """
 
 from dataclasses import dataclass, field

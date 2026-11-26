@@ -213,14 +213,10 @@ def create_new_challenge(
         description=description,
         status=challenge_status or "active",
         created_by=current_user.id,
-        scorer_name=validated.scorer["name"],
-        scorer_label=validated.scorer["label"],
-        direction=validated.scorer["direction"],
-        scorer_params=validated.params,
-        package_version=scorer_catalogue.PACKAGE_VERSION,
         repo_name=repo_name,
         **keys,
     )
+    challenge.apply_scorer(validated)
     challenge.queue_sync()
     db.add(challenge)
     _commit_or_discard(db, storage, keys.values(), title)
@@ -402,11 +398,7 @@ def update_challenge(
         if name in sent:
             setattr(challenge, name, sent[name])
     if validated is not None:
-        challenge.scorer_name = validated.scorer["name"]
-        challenge.scorer_label = validated.scorer["label"]
-        challenge.direction = validated.scorer["direction"]
-        challenge.scorer_params = validated.params
-        challenge.package_version = scorer_catalogue.PACKAGE_VERSION
+        challenge.apply_scorer(validated)
     # New content, so a fresh round of sync attempts.
     challenge.queue_sync()
     _commit_or_discard(db, storage, keys.values(), sent.get("title"))

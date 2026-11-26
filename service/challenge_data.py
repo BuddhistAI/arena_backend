@@ -1,7 +1,7 @@
 """Challenge data validator: checks a Challenge's Inputs, Ground Truth, Media
 Archive, Scorer and parameters together, for both create and edit.
 
-    bundle = validate_challenge_data(
+    scorer = validate_challenge_data(
         inputs=b"...", ground_truth=b"...",
         scorer_name="cer", scorer_params='{"language": "bo"}',
         media_archive=None,  # or a seekable zip file object
@@ -12,7 +12,8 @@ equal; every Input and Reference matches the Scorer's schemas; the parameters
 pass the Scorer's parameter schema; every Input ``media`` path is a file in
 the Media Archive; the archive is a zip of at most 2 GB.
 
-It returns a ``ValidChallengeData`` bundle, or raises ``InvalidChallengeData``
+It returns the ``ValidScorer`` the data was checked against, ready to store
+on the Challenge (``Challenge.apply_scorer``), or raises ``InvalidChallengeData``
 whose ``errors`` list every problem found (each a ``ChallengeDataError`` naming
 the form field, and the line or id when known). All Scorer-specific rules go
 through the Scorer catalogue; this module adds no metric logic.
@@ -27,9 +28,10 @@ import json
 import os
 import re
 import zipfile
-from dataclasses import asdict, dataclass, field
-from typing import Any, BinaryIO, Iterable, List, Mapping, Optional, Union
+from dataclasses import asdict, dataclass
+from typing import Any, BinaryIO, Dict, Iterable, List, Mapping, Optional, Union
 
+from models.challenge import Direction
 from service import scorer_catalogue
 
 INPUTS_FIELD = "inputs_file"
@@ -37,6 +39,9 @@ GROUND_TRUTH_FIELD = "ground_truth_file"
 SCORER_NAME_FIELD = "scorer_name"
 SCORER_PARAMS_FIELD = "scorer_params"
 MEDIA_ARCHIVE_FIELD = "media_archive_file"
+
+# The form fields that make up a Challenge's data and Scorer.
+DATA_FIELDS = (SCORER_NAME_FIELD, SCORER_PARAMS_FIELD, INPUTS_FIELD, GROUND_TRUTH_FIELD, MEDIA_ARCHIVE_FIELD)
 
 MAX_MEDIA_ARCHIVE_BYTES = 2 * 1024**3
 
@@ -70,19 +75,15 @@ class InvalidChallengeData(ValueError):
 
 
 @dataclass(frozen=True)
-class ValidChallengeData:
-    """Data that passed every rule.
+class ValidScorer:
+    """The Scorer that valid data is scored with, as a Challenge stores it:
+    ``params`` has the defaults filled in."""
 
-    ``scorer`` is the Scorer's description (``name``, ``label``,
-    ``direction``...), ``params`` the parameters with defaults filled in,
-    ``input_ids`` the Input ids in file order and ``sample_predictions`` the
-    sample Predictions File (JSONL bytes).
-    """
-
-    scorer: dict
-    params: dict
-    input_ids: List[str]
-    sample_predictions: bytes = field(repr=False)
+    name: str
+    label: str
+    direction: Direction
+    params: Dict[str, Any]
+    package_version: str
 
 
 def validate_challenge_data(
@@ -93,8 +94,8 @@ def validate_challenge_data(
     scorer_params: Union[str, Mapping[str, Any], None] = None,
     media_archive: Optional[BinaryIO] = None,
     max_media_archive_bytes: int = MAX_MEDIA_ARCHIVE_BYTES,
-) -> ValidChallengeData:
-    """Check the data against every rule and return the validated bundle.
+) -> ValidScorer:
+    """Check the data against every rule and return the Scorer it is valid for.
 
     ``media_archive`` is a seekable binary file (a zip) or None; it is read
     in place, never loaded whole, and left at position 0.
@@ -125,12 +126,12 @@ def validate_challenge_data(
             _errors_per_id(scorer["name"], parsed_inputs, references, params) or [_row_error(exc)]
         ) from None
 
-    input_ids = list(parsed_inputs)
-    return ValidChallengeData(
-        scorer=scorer,
+    return ValidScorer(
+        name=scorer["name"],
+        label=scorer["label"],
+        direction=Direction(scorer["direction"]),
         params=params,
-        input_ids=input_ids,
-        sample_predictions=_sample_predictions(scorer, input_ids),
+        package_version=scorer_catalogue.PACKAGE_VERSION,
     )
 
 
@@ -141,11 +142,7 @@ def sample_predictions_file(scorer_name: str, input_ids: Iterable[str]) -> bytes
     Raises:
         scorer_catalogue.UnknownScorerError: If no Scorer has that name.
     """
-    return _sample_predictions(scorer_catalogue.describe_scorer(scorer_name), input_ids)
-
-
-def _sample_predictions(scorer: Mapping[str, Any], input_ids: Iterable[str]) -> bytes:
-    placeholder = scorer["sample_prediction"]
+    placeholder = scorer_catalogue.describe_scorer(scorer_name)["sample_prediction"]
     return "".join(
         json.dumps({"id": input_id, "prediction": placeholder}, ensure_ascii=False) + "\n"
         for input_id in input_ids
