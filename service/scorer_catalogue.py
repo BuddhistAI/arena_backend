@@ -64,7 +64,9 @@ def list_scorers() -> list[dict[str, Any]]:
 
     Each description is ``Scorer.describe()``: ``name``, ``label``,
     ``direction`` (``"lower_is_better"`` / ``"higher_is_better"``),
-    ``parameter_schema`` (JSON Schema with defaults), ``input_schema``,
+    ``parameter_schema`` (JSON Schema with defaults), ``display_format``
+    (``{"style", "decimals"}`` for the Headline Metric), ``public_summary``
+    (the declared ``{"key", "label", "format"}`` entries), ``input_schema``,
     ``reference_schema``, ``prediction_schema`` and ``sample_prediction``.
     """
     return [scorer.describe() for scorer in buddhist_eval.list_scorers()]

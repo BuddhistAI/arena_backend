@@ -18,5 +18,6 @@ router = APIRouter(prefix="/scorers", tags=["scorers"])
     dependencies=[Depends(get_current_active_user)],
 )
 def list_scorers():
-    """Every Scorer with its name, label, Direction and parameter JSON schema (with defaults)."""
+    """Every Scorer with its name, label, Direction, parameter JSON schema (with defaults),
+    Headline Metric display format and Public Summary declaration."""
     return scorer_catalogue.list_scorers()
