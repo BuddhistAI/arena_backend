@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from models import Challenge, Submission, User
@@ -43,14 +43,25 @@ def check_daily_limit(db: Session, challenge: Challenge, user: User, now: dateti
         user: The signed-in submitter.
         now: The current time in naive UTC, from the clock port.
 
+    Concurrent Submissions by one user to one Challenge are serialised: the
+    check holds a lock until ``db``'s transaction ends, so the caller must
+    store the Submission in that same transaction.
+
     Raises:
         DailyLimitReached: The user already stored the limit today.
     """
     if user.role == EXEMPT_ROLE:
         return
+    _lock_user_on_challenge(db, challenge, user)
     day_start = datetime.datetime.combine(now.date(), datetime.time())
     if _stored_since(db, challenge, user, day_start) >= DAILY_SUBMISSION_LIMIT:
         raise DailyLimitReached(reset_at=day_start + datetime.timedelta(days=1))
+
+
+def _lock_user_on_challenge(db: Session, challenge: Challenge, user: User) -> None:
+    """Wait for, then hold until the transaction ends, the user's Postgres
+    advisory lock on the Challenge."""
+    db.execute(select(func.pg_advisory_xact_lock(func.hashtext(user.id), func.hashtext(str(challenge.id)))))
 
 
 def _stored_since(db: Session, challenge: Challenge, user: User, since: datetime.datetime) -> int:
