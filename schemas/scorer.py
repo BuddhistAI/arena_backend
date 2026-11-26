@@ -20,6 +20,12 @@ class PublicSummaryEntry(BaseModel):
     format: DisplayFormat
 
 
+class PublicSummaryValue(PublicSummaryEntry):
+    """One Public Summary entry of a scored Submission, with its value."""
+
+    value: float
+
+
 class ScorerRead(BaseModel):
     """One Scorer as the challenge form and the Leaderboard need it."""
 
