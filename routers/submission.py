@@ -17,7 +17,8 @@ from service.daily_limit import DailyLimitReached
 from service.submission_intake import SubmissionForm, SubmissionIntake, SubmissionRejected
 from submission_worker import SubmissionQueue, get_queue_stats, get_submission_queue
 from submission_cache import get_cache_stats
-from auth import get_current_active_user
+from auth import get_current_active_user, require_admin
+from models.submission import SubmissionStatus
 import datetime
 import math
 import uuid
@@ -50,6 +51,22 @@ async def list_my_submissions(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/preferred-models", response_model=List[str])
+def list_preferred_models(db: db_dependency) -> List[str]:
+    """List the Preferred Model ids already used, for the form's autocomplete.
+
+    Returns:
+        Each distinct Preferred Model id on any Challenge's Submissions, sorted.
+    """
+    rows = (
+        db.query(models.Submission.preferred_model)
+        .filter(models.Submission.preferred_model.isnot(None))
+        .distinct()
+        .order_by(models.Submission.preferred_model)
+        .all()
+    )
+    return [preferred_model for (preferred_model,) in rows]
+
 @router.get("/{submission_id}", response_model=SubmissionRead)
 async def get_submission(db: db_dependency, submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION)):
     submission = db.query(models.Submission).filter(models.Submission.id == submission_id).first()
@@ -76,6 +93,38 @@ async def get_submission_status(
         raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
     return submission
 
+
+
+@router.post(
+    "/{submission_id}/resync",
+    response_model=SubmissionRead,
+    summary="Resync a submission's repo folder (admin)",
+    responses={
+        403: {"description": "The signed-in user is not an admin."},
+        409: {"description": "The Submission is not scored, so it is never published."},
+    },
+)
+def resync_submission(
+    db: db_dependency,
+    current_user: User = Depends(require_admin),
+    submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION),
+):
+    """
+    Resync a Submission (admin only): set its sync status to ``pending`` and
+    queue a sync of its Challenge, which rebuilds the Challenge Repo, this
+    Submission's folder included, from the database and object storage.
+    Typically used once a sync ``failed``.
+    """
+    submission = db.get(models.Submission, submission_id)
+    if submission is None:
+        raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
+    if submission.status != SubmissionStatus.COMPLETED:
+        raise HTTPException(status_code=409, detail="Only scored Submissions are published to the Challenge Repo")
+    submission.queue_sync()
+    db.get(models.Challenge, submission.challenge_id).queue_sync()
+    db.commit()
+    db.refresh(submission)
+    return submission
 
 
 @router.delete("/{submission_id}", status_code=status.HTTP_204_NO_CONTENT)

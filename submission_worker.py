@@ -165,6 +165,7 @@ class SubmissionWorker:
         submission.score_details = result.details
         submission.status = SubmissionStatus.COMPLETED
         submission.status_message = None
+        challenge.queue_sync()
         db.commit()
         logger.info("Worker %s: scored %s", self.worker_id, submission_id)
 

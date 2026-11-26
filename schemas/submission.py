@@ -4,10 +4,13 @@ from pydantic import BaseModel, Field
 from typing import Any, Dict, Optional
 from enum import Enum
 
+from models.challenge import SyncStatus
 from models.submission import SubmissionType
 
 SUBMISSION_ID_DESCRIPTION = "ID of the submission"
 HEADLINE_METRIC_DESCRIPTION = "The Scorer's Headline Metric, unrounded; set once completed"
+REPO_PATH_DESCRIPTION = "The Submission's folder in the Challenge Repo, once synced"
+SYNC_STATUS_DESCRIPTION = "Whether the folder is in the Challenge Repo: pending, synced or failed"
 
 class SubmissionStatus(str, Enum):
     PENDING = "pending"
@@ -36,6 +39,8 @@ class SubmissionRead(BaseModel):
     status_message: Optional[str] = Field(None, description="The error, once failed")
     headline_metric: Optional[float] = Field(None, description=HEADLINE_METRIC_DESCRIPTION)
     score_details: Optional[Dict[str, Any]] = Field(None, description="Everything else the Scorer returned")
+    repo_path: Optional[str] = Field(None, description=REPO_PATH_DESCRIPTION)
+    sync_status: SyncStatus = Field(..., description=SYNC_STATUS_DESCRIPTION)
     created_at: datetime.datetime = Field(..., description="Creation timestamp of the submission")
     updated_at: datetime.datetime = Field(..., description="Last update timestamp of the submission")
 
@@ -63,6 +68,8 @@ class SubmissionStatusResponse(BaseModel):
     status_message: Optional[str] = Field(None, description="The error, once failed")
     headline_metric: Optional[float] = Field(None, description=HEADLINE_METRIC_DESCRIPTION)
     score_details: Optional[Dict[str, Any]] = Field(None, description="Everything else the Scorer returned")
+    repo_path: Optional[str] = Field(None, description=REPO_PATH_DESCRIPTION)
+    sync_status: SyncStatus = Field(..., description=SYNC_STATUS_DESCRIPTION)
     created_at: Optional[datetime.datetime] = Field(None, description="Creation timestamp")
     updated_at: Optional[datetime.datetime] = Field(None, description="Last update timestamp")
 

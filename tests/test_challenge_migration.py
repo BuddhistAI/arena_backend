@@ -153,7 +153,7 @@ def test_downgrade_from_head_restores_the_previous_submission_table(legacy_datab
     assert "dataset_url" in columns
     assert not columns & {
         "type", "name", "model_link", "predictions_url", "headline_metric", "score_details",
-        "preferred_model", "license", "artifact_url",
+        "preferred_model", "license", "artifact_url", "repo_path", "sync_status",
     }
 
 
@@ -171,3 +171,19 @@ def test_downgrade_drops_the_prompt_submission_fields(legacy_database, alembic_c
     columns = {c["name"] for c in inspect(database.engine).get_columns("submission")}
     assert "predictions_url" in columns
     assert not columns & {"preferred_model", "license", "artifact_url"}
+
+
+def test_downgrade_drops_the_submission_repo_sync_fields(legacy_database, alembic_cfg):
+    """The repo sync migration can be undone back to ``d5f1b3c7e9a2``,
+    keeping the Prompt Submission fields."""
+    from alembic import command
+    from sqlalchemy import inspect
+
+    import database
+
+    command.upgrade(alembic_cfg, "head")
+    command.downgrade(alembic_cfg, "d5f1b3c7e9a2")
+
+    columns = {c["name"] for c in inspect(database.engine).get_columns("submission")}
+    assert "preferred_model" in columns
+    assert not columns & {"repo_path", "sync_status"}

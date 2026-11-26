@@ -1,7 +1,7 @@
 from sqlalchemy import Column, String, DateTime, Float, ForeignKey, Enum, JSON, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from database import Base
-from models.challenge import _one_of
+from models.challenge import SyncStatus, _one_of
 import datetime
 import uuid
 import enum
@@ -27,6 +27,7 @@ class Submission(Base):
     __tablename__ = "submission"
     __table_args__ = (
         CheckConstraint(_one_of("type", SubmissionType), name="ck_submission_type"),
+        CheckConstraint(_one_of("sync_status", SyncStatus), name="ck_submission_sync_status"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, unique=True, nullable=False)
@@ -51,5 +52,24 @@ class Submission(Base):
     # Unrounded, so ranking ties are broken by the real value.
     headline_metric = Column(Float, nullable=True)
     score_details = Column(JSON, nullable=True)
+    # Challenge Repo: the Submission's folder, set once it is published.
+    # Its sync rides on the Challenge's (see ``sync_worker``).
+    repo_path = Column(String, nullable=True)
+    sync_status = Column(
+        String, nullable=False, default=SyncStatus.PENDING.value, server_default=SyncStatus.PENDING.value
+    )
     created_at = Column(DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     updated_at = Column(DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    def mark_synced(self, repo_path: str) -> None:
+        """The Submission's folder is in the Challenge Repo at ``repo_path``."""
+        self.sync_status = SyncStatus.SYNCED
+        self.repo_path = repo_path
+
+    def queue_sync(self) -> None:
+        """Wait for the next sync of the Challenge to publish the folder."""
+        self.sync_status = SyncStatus.PENDING
+
+    def record_failed_sync(self) -> None:
+        """Its Challenge's sync ran out of attempts before publishing it."""
+        self.sync_status = SyncStatus.FAILED
