@@ -5,13 +5,21 @@ from sqlalchemy.orm import Session
 import models
 from models.user import User
 from database import get_db
-from schemas.submission import SubmissionRead, SubmissionCreatedResponse, SubmissionStatusResponse
+from schemas.submission import (
+    DailyLimitResponse,
+    SubmissionCreatedResponse,
+    SubmissionRead,
+    SubmissionStatusResponse,
+)
 from ports.clock import Clock, get_clock
 from ports.object_storage import ObjectStorage, get_object_storage
+from service.daily_limit import DailyLimitReached
 from service.submission_intake import SubmissionForm, SubmissionIntake, SubmissionRejected
 from submission_worker import SubmissionQueue, get_queue_stats, get_submission_queue
 from submission_cache import get_cache_stats
 from auth import get_current_active_user
+import datetime
+import math
 import uuid
 
 # Constants for repeated strings
@@ -121,6 +129,10 @@ async def delete_submission(
     responses={
         404: {"description": "No live Challenge has that id."},
         422: {"description": "Invalid Submission: ``errors`` lists each problem; nothing was stored."},
+        429: {
+            "model": DailyLimitResponse,
+            "description": "Daily limit reached on this Challenge; ``reset_at`` is the next 00:00 UTC. Nothing was stored.",
+        },
     },
 )
 def create_submission(
@@ -160,6 +172,8 @@ def create_submission(
     intake = SubmissionIntake(db=db, storage=storage, submission_queue=submission_queue, clock=clock)
     try:
         submission = intake.submit(challenge, current_user, form)
+    except DailyLimitReached as exc:
+        return _daily_limit_response(exc, clock())
     except SubmissionRejected as exc:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -167,6 +181,16 @@ def create_submission(
         )
     return SubmissionCreatedResponse(
         id=submission.id, status=submission.status.value, message="Submission accepted; scoring has been queued."
+    )
+
+
+def _daily_limit_response(exc: DailyLimitReached, now: datetime.datetime) -> JSONResponse:
+    """429 with the reset time as ISO 8601 UTC, and Retry-After in seconds."""
+    retry_after = max(0, math.ceil((exc.reset_at - now).total_seconds()))
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content=DailyLimitResponse(detail=str(exc), reset_at=f"{exc.reset_at:%Y-%m-%dT%H:%M:%S}Z").model_dump(),
+        headers={"Retry-After": str(retry_after)},
     )
 
 # ******** Monitoring endpoints ********
