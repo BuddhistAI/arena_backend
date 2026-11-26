@@ -25,6 +25,7 @@ from models.user import ADMIN_ROLE
 from ports.object_storage import ObjectNotFound, ObjectStorage
 from ports.repo_host import challenge_repo_folder_url
 from service.leaderboard import LeaderboardScorer, read_rank, read_scorer
+from service.submission_download import download_path
 
 
 class SubmissionNotFound(Exception):
@@ -59,6 +60,7 @@ class SubmissionDetail:
     repo_path: Optional[str]
     repo_url: Optional[str]
     prompt_text: Optional[str]
+    download_url: Optional[str]
 
 
 def read_submission_detail(
@@ -109,6 +111,7 @@ def read_submission_detail(
         repo_path=submission.repo_path,
         repo_url=_repo_url(submission),
         prompt_text=_prompt_text(submission, storage),
+        download_url=download_path(submission.id, submission.type),
     )
 
 

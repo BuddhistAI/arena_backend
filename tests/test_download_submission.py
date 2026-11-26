@@ -117,3 +117,21 @@ def test_a_download_works_before_the_github_sync_and_after_it_fails(
 
     assert pending_content == failed_content == (PROMPT.encode() if submit is submit_prompt else SKILL_ZIP)
 
+
+@pytest.mark.parametrize("submit", [submit_prompt, submit_skill])
+def test_a_prompts_or_skills_detail_links_to_its_download(
+    client, headers_for, participant, challenge, submission_worker, clock, storage, submit
+):
+    """The detail's ``download_url``, relative to the API root, downloads the Submission."""
+    submission_id = submit_scored(client, headers_for(participant), challenge, submission_worker, clock, submit)
+
+    download_url = client.get(f"/submissions/{submission_id}").json()["download_url"]
+
+    assert download_url == f"/submissions/{submission_id}/download"
+    assert client.get(download_url, follow_redirects=False).status_code == 307
+
+
+def test_a_models_detail_has_no_download_url(client, headers_for, participant, challenge, submission_worker, clock):
+    submission_id = submit_scored(client, headers_for(participant), challenge, submission_worker, clock)
+
+    assert client.get(f"/submissions/{submission_id}").json()["download_url"] is None
