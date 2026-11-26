@@ -326,3 +326,47 @@ def test_a_page_or_page_size_below_one_is_refused(client, challenge, params):
 
     assert response.status_code == 422, response.text
 
+
+
+@pytest.fixture(name="mixed_board")
+def mixed_board_fixture(client, headers_for, make_user, challenge, submission_worker, clock):
+    """Five exact Submissions, so tied and ranked in the order made:
+    1 Model, 2 Prompt, 3 Model, 4 Skill, 5 Prompt. Returns their ids by Rank."""
+    admin = make_user("admin", name="prolific")  # admins have no daily limit
+    headers = headers_for(admin)
+    return [
+        submit_scored(client, headers, challenge, submission_worker, clock, name="Google Vision OCR"),
+        submit_scored(
+            client, headers, challenge, submission_worker, clock,
+            submit_fn=submit_prompt, name="Careful transcriber", preferred_model="claude-opus-4-1",
+        ),
+        submit_scored(client, headers, challenge, submission_worker, clock, name="Whisper large-v3"),
+        submit_scored(
+            client, headers, challenge, submission_worker, clock,
+            submit_fn=submit_skill, name="Tibetan OCR skill", preferred_model="gpt-5",
+        ),
+        submit_scored(
+            client, headers, challenge, submission_worker, clock,
+            submit_fn=submit_prompt, name="Line by line", preferred_model="Claude-Sonnet-4-5",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "submission_type, expected_ranks",
+    [("model", [1, 3]), ("prompt", [2, 5]), ("skill", [4])],
+)
+def test_filtering_by_submission_type_hides_other_rows_without_changing_a_rank(
+    client, challenge, mixed_board, submission_type, expected_ranks
+):
+    """The Prompt tab shows the Prompts ranked #2 and #5 overall as #2 and #5."""
+    board = leaderboard(client, challenge, type=submission_type)
+
+    assert ranked_ids(board) == [(mixed_board[rank - 1], rank) for rank in expected_ranks]
+
+
+def test_an_unknown_submission_type_is_refused(client, challenge):
+    """Only model, prompt and skill are Submission Types; anything else answers 422."""
+    response = client.get(f"/challenges/{challenge['id']}/leaderboard", params={"type": "dataset"})
+
+    assert response.status_code == 422, response.text

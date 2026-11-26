@@ -77,13 +77,19 @@ class Leaderboard:
 
 
 def read_leaderboard(
-    db: Session, challenge_id: uuid.UUID, *, page: int = 1, limit: int = DEFAULT_PAGE_SIZE
+    db: Session,
+    challenge_id: uuid.UUID,
+    *,
+    submission_type: Optional[SubmissionType] = None,
+    page: int = 1,
+    limit: int = DEFAULT_PAGE_SIZE,
 ) -> Leaderboard:
     """Rank a Challenge's scored Submissions and return one page of them.
 
     Args:
         db: Database session.
         challenge_id: The Challenge whose Leaderboard to read.
+        submission_type: Show only rows of this Submission Type; None for all.
         page: Which page, from 1.
         limit: Rows per page, from 1; cut to ``MAX_PAGE_SIZE``.
 
@@ -100,7 +106,10 @@ def read_leaderboard(
     limit = min(limit, MAX_PAGE_SIZE)
     # Rank first over the whole Leaderboard; only then choose the rows shown.
     ranked = _ranked(challenge).subquery()
-    shown = select(ranked).order_by(ranked.c.rank).offset((page - 1) * limit).limit(limit)
+    shown = select(ranked)
+    if submission_type is not None:
+        shown = shown.where(ranked.c.type == submission_type)
+    shown = shown.order_by(ranked.c.rank).offset((page - 1) * limit).limit(limit)
     return Leaderboard(
         scorer=_scorer(challenge),
         page=page,
