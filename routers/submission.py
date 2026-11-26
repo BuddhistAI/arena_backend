@@ -1,5 +1,5 @@
 from fastapi import APIRouter, status, HTTPException, Depends, Path, Query, UploadFile, File, Form
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from typing import Annotated, List, Optional, Union
 from sqlalchemy.orm import Session
 import models
@@ -16,6 +16,7 @@ from ports.clock import Clock, get_clock
 from ports.object_storage import ObjectStorage, get_object_storage
 from service.daily_limit import DailyLimitReached
 from service.submission_detail import SubmissionDetail, SubmissionGone, SubmissionNotFound, read_submission_detail
+from service.submission_download import DownloadNotFound, presigned_download_url
 from service.submission_deletion import delete_submission as delete_submission_and_files
 from service.submission_intake import SubmissionForm, SubmissionIntake, SubmissionRejected
 from submission_worker import SubmissionQueue, get_queue_stats, get_submission_queue
@@ -106,6 +107,28 @@ def get_submission(
         raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
     except SubmissionGone:
         raise HTTPException(status_code=status.HTTP_410_GONE, detail=SUBMISSION_DELETED_MESSAGE)
+
+@router.get(
+    "/{submission_id}/download",
+    status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    response_class=RedirectResponse,
+    responses={404: {"description": "No scored, live Prompt or Skill has that id."}},
+)
+def download_submission(
+    db: db_dependency,
+    storage: ObjectStorage = Depends(get_object_storage),
+    submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION),
+) -> RedirectResponse:
+    """
+    Download a scored Prompt as ``<slug>-<id>.md`` or a Skill as the zip its
+    author uploaded, ``<slug>-<id>.zip``; no sign-in. Redirects to a
+    short-lived storage URL, so the download works whatever the Submission's
+    GitHub sync status. A Model has no download.
+    """
+    try:
+        return RedirectResponse(presigned_download_url(db, storage, submission_id))
+    except DownloadNotFound:
+        raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
 
 @router.get("/{submission_id}/status", response_model=SubmissionStatusResponse)
 async def get_submission_status(
