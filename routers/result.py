@@ -14,8 +14,22 @@ db_dependency = Annotated[Session, Depends(get_db)]
 
 
 # ** result (submission_id) -> submission (model_id) -> model **
+from models.challenge import Challenge
 from models.submission import Submission
 from models.model import Model
+
+
+def _refuse_deleted_challenge(db: Session, challenge_id: uuid.UUID) -> None:
+    """A deleted Challenge is gone from the arena: its results are 404 like
+    the Challenge itself. Unknown ids keep their old answers."""
+    deleted = (
+        db.query(Challenge.deleted_at.isnot(None))
+        .filter(Challenge.id == challenge_id)
+        .scalar()
+    )
+    if deleted:
+        raise HTTPException(status_code=404, detail="Challenge not found")
+
 
 @router.get("/challenge/{challenge_id}", response_model=List[ResultReadNested], status_code=status.HTTP_200_OK)
 async def get_results_by_challenge(
@@ -23,6 +37,7 @@ async def get_results_by_challenge(
     challenge_id: uuid.UUID = Path(..., description="Challenge ID to get results for")
 ):
     """Get all results for a specific challenge"""
+    _refuse_deleted_challenge(db, challenge_id)
     # Get all submissions for the challenge
     submissions = db.query(Submission).filter(Submission.challenge_id == challenge_id).all()
     
@@ -222,8 +237,7 @@ async def debug_challenge_data(
     challenge_id: uuid.UUID = Path(..., description="Challenge ID to debug")
 ):
     """Debug endpoint to see all data for a challenge"""
-    # Check if challenge exists
-    from models.challenge import Challenge
+    _refuse_deleted_challenge(db, challenge_id)
     challenge = db.query(Challenge).filter(Challenge.id == challenge_id).first()
     
     # Get submissions

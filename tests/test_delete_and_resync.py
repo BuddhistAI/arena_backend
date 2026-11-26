@@ -193,3 +193,16 @@ def test_a_resync_rebuilds_the_repo_and_drops_files_added_on_github(
     sync_worker.drain()
 
     assert repo.files == published
+
+
+def test_the_results_of_a_deleted_challenge_are_not_found(client, admin_headers, category):
+    challenge = created(create_challenge(client, admin_headers, category, title="Tibetan OCR"))
+    results = f"/results/challenge/{challenge['id']}"
+    debug = f"/results/debug/challenge/{challenge['id']}"
+    assert client.get(results).status_code == 200
+    assert client.get(debug).status_code == 200
+
+    delete(client, challenge, admin_headers)
+
+    assert client.get(results).status_code == 404
+    assert client.get(debug).status_code == 404
