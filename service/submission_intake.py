@@ -6,11 +6,14 @@
         predictions=b'{"id": "1", "prediction": "..."}\\n', model_link=None,
     ))
 
-``submit`` runs every check before it stores anything. If any check fails it
+``submit`` first refuses the Submission with ``DailyLimitReached`` if the
+user already stored today's limit on the Challenge (``service.daily_limit``).
+It runs every other check before it stores anything. If any check fails it
 raises ``SubmissionRejected``, whose ``errors`` list every problem found (each
 a ``SubmissionError`` naming the form field, and the line or Input id when
 known); nothing is stored, nothing is counted and the Challenge is not Locked.
-Otherwise it stores the Predictions File privately, saves the Submission as
+Otherwise it stores the Predictions File and the Artifact (a Prompt as
+markdown) privately, saves the Submission as
 ``pending`` (Locking the Challenge if it is the first), and queues it for the
 submission worker to score.
 
@@ -25,7 +28,7 @@ through the Scorer catalogue; this module adds no metric logic.
 from __future__ import annotations
 
 import uuid
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -39,24 +42,37 @@ from ports.clock import Clock
 from ports.object_storage import ObjectStorage, private_key
 from service import scorer_catalogue
 from service.challenge_data import MAX_REPORTED_ERRORS, line_of
+from service.daily_limit import check_daily_limit
 from submission_worker import SubmissionQueue, SubmissionTask
 
 TYPE_FIELD = "type"
 NAME_FIELD = "name"
 DESCRIPTION_FIELD = "description"
 MODEL_LINK_FIELD = "model_link"
+PREFERRED_MODEL_FIELD = "preferred_model"
+LICENSE_FIELD = "license"
+PROMPT_TEXT_FIELD = "prompt_text"
+PROMPT_FILE_FIELD = "prompt_file"
 PREDICTIONS_FIELD = "predictions_file"
+
+LICENSES: Tuple[str, ...] = ("CC-BY-4.0", "CC0-1.0", "MIT", "Apache-2.0")
+"""The licenses a Prompt or Skill may carry, as SPDX ids."""
 
 
 @dataclass(frozen=True)
 class SubmissionForm:
-    """What the participant sent: the form fields and the Predictions File."""
+    """What the participant sent: the form fields, the Artifact and the
+    Predictions File. A Prompt comes as ``prompt_text`` or ``prompt_file``."""
 
     type: str
     name: str
     description: str
     predictions: bytes
     model_link: Optional[str] = None
+    preferred_model: Optional[str] = None
+    license: Optional[str] = None
+    prompt_text: Optional[str] = None
+    prompt_file: Optional[bytes] = None
 
 
 @dataclass(frozen=True)
@@ -97,8 +113,40 @@ class Candidate:
 Rule = Callable[[Candidate], List[SubmissionError]]
 """A check on a Candidate, returning the problems it finds (none if it passes)."""
 
-Columns = Callable[[Session, User, SubmissionForm], Dict[str, Any]]
-"""The type's own Submission columns, storing its Artifact if it has one."""
+@dataclass
+class Stash:
+    """Puts one Submission's files in private object storage and remembers
+    them, so they can all be discarded if the Submission is not saved."""
+
+    storage: ObjectStorage
+    submission_id: uuid.UUID
+    keys: List[str] = field(default_factory=list)
+
+    def put(self, filename: str, body: bytes, content_type: str) -> str:
+        """Store ``body`` under the Submission's private prefix.
+
+        Args:
+            filename: The object's name within the Submission's prefix.
+            body: The bytes to store.
+            content_type: The object's media type.
+
+        Returns:
+            The object's storage key.
+        """
+        key = private_key("submissions", str(self.submission_id), filename)
+        self.storage.put(key, body, content_type=content_type)
+        self.keys.append(key)
+        return key
+
+    def discard(self) -> None:
+        """Delete every object this stash stored."""
+        for key in self.keys:
+            self.storage.delete(key)
+
+
+Columns = Callable[[Session, User, SubmissionForm, Stash], Dict[str, Any]]
+"""The type's own Submission columns, storing its Artifact (through the
+stash, so it is cleaned up on a failed save) if it has one."""
 
 
 @dataclass(frozen=True)
@@ -137,8 +185,11 @@ class SubmissionIntake:
             The stored Submission, ``pending``.
 
         Raises:
+            DailyLimitReached: The user used today's Submissions to this
+                Challenge; checked first, and nothing was stored.
             SubmissionRejected: Listing every problem; nothing was stored.
         """
+        check_daily_limit(self.db, challenge, user, self.clock())
         form = _cleaned(form)
         type_intake = _type_intake(form.type)
         candidate = Candidate(challenge=challenge, form=form, storage=self.storage)
@@ -152,11 +203,12 @@ class SubmissionIntake:
     def _store(
         self, challenge: Challenge, user: User, form: SubmissionForm, type_intake: TypeIntake
     ) -> Submission:
-        """Store the Predictions File, then save the row and Lock the Challenge
-        in one commit. If the commit fails the stored object is deleted."""
+        """Store the Predictions File and the Artifact, then save the row and
+        Lock the Challenge in one commit. If the commit fails the stored
+        objects are deleted."""
         submission_id = uuid.uuid4()
-        key = private_key("submissions", str(submission_id), "predictions.jsonl")
-        self.storage.put(key, form.predictions, content_type="application/jsonl")
+        stash = Stash(storage=self.storage, submission_id=submission_id)
+        key = stash.put("predictions.jsonl", form.predictions, content_type="application/jsonl")
         now = self.clock()
         try:
             submission = Submission(
@@ -170,7 +222,7 @@ class SubmissionIntake:
                 status=SubmissionStatus.PENDING,
                 created_at=now,
                 updated_at=now,
-                **type_intake.columns(self.db, user, form),
+                **type_intake.columns(self.db, user, form, stash),
             )
             if challenge.locked_at is None:
                 challenge.locked_at = now
@@ -178,21 +230,30 @@ class SubmissionIntake:
             self.db.commit()
         except SQLAlchemyError:
             self.db.rollback()
-            self.storage.delete(key)
+            stash.discard()
             raise
         self.db.refresh(submission)
         return submission
 
 
 def _cleaned(form: SubmissionForm) -> SubmissionForm:
-    """Text fields stripped; a blank model link is no model link."""
+    """Text fields stripped and a blank optional field is no field. A typed
+    prompt keeps its exact text unless it is blank."""
     return replace(
         form,
         type=form.type.strip().lower(),
         name=form.name.strip(),
         description=form.description.strip(),
-        model_link=(form.model_link or "").strip() or None,
+        model_link=_blank_to_none(form.model_link),
+        preferred_model=_blank_to_none(form.preferred_model),
+        license=_blank_to_none(form.license),
+        prompt_text=form.prompt_text if _blank_to_none(form.prompt_text) else None,
+        prompt_file=form.prompt_file or None,
     )
+
+
+def _blank_to_none(text: Optional[str]) -> Optional[str]:
+    return (text or "").strip() or None
 
 
 def _type_intake(submission_type: str) -> TypeIntake:
@@ -218,6 +279,17 @@ def _required(field: str) -> Rule:
         if getattr(candidate.form, field):
             return []
         return [SubmissionError(field, "is required")]
+
+    return rule
+
+
+def _not_accepted(field_name: str, submission_type: SubmissionType) -> Rule:
+    message = f"is not accepted for {submission_type.value.capitalize()} Submissions"
+
+    def rule(candidate: Candidate) -> List[SubmissionError]:
+        if getattr(candidate.form, field_name) is None:
+            return []
+        return [SubmissionError(field_name, message)]
 
     return rule
 
@@ -275,18 +347,66 @@ def _check_model_link(candidate: Candidate) -> List[SubmissionError]:
     return [SubmissionError(MODEL_LINK_FIELD, f"must be an https:// link (got {link!r})")]
 
 
-def _model_columns(db: Session, user: User, form: SubmissionForm) -> Dict[str, Any]:
+def _check_license(candidate: Candidate) -> List[SubmissionError]:
+    """A license, when given, is one of the offered SPDX ids, exactly."""
+    license_id = candidate.form.license
+    if license_id is None or license_id in LICENSES:
+        return []
+    return [SubmissionError(LICENSE_FIELD, f"must be one of {', '.join(LICENSES)} (got {license_id!r})")]
+
+
+def _check_prompt(candidate: Candidate) -> List[SubmissionError]:
+    """Exactly one of a typed prompt or a prompt file, and a file is UTF-8
+    text. The prompt's content is otherwise not checked."""
+    form = candidate.form
+    if form.prompt_file is None:
+        if form.prompt_text is None:
+            return [SubmissionError(PROMPT_TEXT_FIELD, "is required: type the prompt or upload it as a file")]
+        return []
+    if form.prompt_text is not None:
+        return [SubmissionError(PROMPT_FILE_FIELD, "type the prompt or upload it as a file, not both")]
+    try:
+        form.prompt_file.decode("utf-8")
+    except UnicodeDecodeError:
+        return [SubmissionError(PROMPT_FILE_FIELD, "must be a UTF-8 text file")]
+    return []
+
+
+def _model_columns(db: Session, user: User, form: SubmissionForm, stash: Stash) -> Dict[str, Any]:
     """A Model Submission reuses the model of that name, or creates it."""
     model = create_or_get_model(db, form.name, user.id)
     return {"model_id": model.id, "model_link": form.model_link}
+
+
+def _prompt_columns(db: Session, user: User, form: SubmissionForm, stash: Stash) -> Dict[str, Any]:
+    """A Prompt is stored as markdown, typed or uploaded alike."""
+    prompt = form.prompt_file if form.prompt_file is not None else form.prompt_text.encode()
+    return {
+        "artifact_url": stash.put("prompt.md", prompt, content_type="text/markdown; charset=utf-8"),
+        "preferred_model": form.preferred_model,
+        "license": form.license,
+    }
 
 
 SHARED_FORM_RULES: Tuple[Rule, ...] = (_required(NAME_FIELD), _required(DESCRIPTION_FIELD))
 
 TYPE_INTAKES: Dict[SubmissionType, TypeIntake] = {
     SubmissionType.MODEL: TypeIntake(
-        form_rules=(),
+        form_rules=tuple(
+            _not_accepted(f, SubmissionType.MODEL)
+            for f in (PREFERRED_MODEL_FIELD, LICENSE_FIELD, PROMPT_TEXT_FIELD, PROMPT_FILE_FIELD)
+        ),
         artifact_rules=(_check_model_link,),
         columns=_model_columns,
+    ),
+    SubmissionType.PROMPT: TypeIntake(
+        form_rules=(
+            _not_accepted(MODEL_LINK_FIELD, SubmissionType.PROMPT),
+            _required(PREFERRED_MODEL_FIELD),
+            _required(LICENSE_FIELD),
+            _check_license,
+        ),
+        artifact_rules=(_check_prompt,),
+        columns=_prompt_columns,
     ),
 }

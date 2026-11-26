@@ -144,9 +144,9 @@ def submission_json(submission: Submission, *, submitter: str, scorer_name: str)
         "submitter": submitter,
         "scorer_name": scorer_name,
         "headline_metric": submission.headline_metric,
-        "preferred_model": getattr(submission, "preferred_model", None),
+        "preferred_model": submission.preferred_model,
         "model_link": submission.model_link,
-        "license": getattr(submission, "license", None),
+        "license": submission.license,
         "created_at": _utc_timestamp(submission.created_at),
     }
 

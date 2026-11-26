@@ -5,14 +5,22 @@ from sqlalchemy.orm import Session
 import models
 from models.user import User
 from database import get_db
-from schemas.submission import SubmissionRead, SubmissionCreatedResponse, SubmissionStatusResponse
+from schemas.submission import (
+    DailyLimitResponse,
+    SubmissionCreatedResponse,
+    SubmissionRead,
+    SubmissionStatusResponse,
+)
 from ports.clock import Clock, get_clock
 from ports.object_storage import ObjectStorage, get_object_storage
+from service.daily_limit import DailyLimitReached
 from service.submission_intake import SubmissionForm, SubmissionIntake, SubmissionRejected
 from submission_worker import SubmissionQueue, get_queue_stats, get_submission_queue
 from submission_cache import get_cache_stats
 from auth import get_current_active_user, require_admin
 from models.submission import SubmissionStatus
+import datetime
+import math
 import uuid
 
 # Constants for repeated strings
@@ -154,6 +162,10 @@ async def delete_submission(
     responses={
         404: {"description": "No live Challenge has that id."},
         422: {"description": "Invalid Submission: ``errors`` lists each problem; nothing was stored."},
+        429: {
+            "model": DailyLimitResponse,
+            "description": "Daily limit reached on this Challenge; ``reset_at`` is the next 00:00 UTC. Nothing was stored.",
+        },
     },
 )
 def create_submission(
@@ -163,10 +175,16 @@ def create_submission(
     submission_queue: SubmissionQueue = Depends(get_submission_queue),
     clock: Clock = Depends(get_clock),
     challenge_id: uuid.UUID = Form(..., description="ID of the Challenge submitted to"),
-    submission_type: str = Form(..., alias="type", description="Submission Type: model (prompt and skill coming)"),
+    submission_type: str = Form(..., alias="type", description="Submission Type: model or prompt (skill coming)"),
     name: str = Form("", description="Name of the Submission; for a Model, the model name (reused or created)"),
-    description: str = Form("", description="Description of the Submission"),
+    description: str = Form("", description="Description of the Submission; for a Prompt, how to run it"),
     model_link: Optional[str] = Form(None, description="Model only: optional https link to the model"),
+    preferred_model: Optional[str] = Form(None, description="Prompt only: the exact model id it was run with"),
+    license_: Optional[str] = Form(
+        None, alias="license", description="Prompt only: CC-BY-4.0, CC0-1.0, MIT or Apache-2.0"
+    ),
+    prompt_text: Optional[str] = Form(None, description="Prompt only: the prompt, typed (or send prompt_file)"),
+    prompt_file: Optional[UploadFile] = File(None, description="Prompt only: the prompt as a text file"),
     predictions_file: UploadFile = File(..., description="Predictions File: JSONL {id, prediction} rows, one per Input id"),
 ):
     """
@@ -188,11 +206,17 @@ def create_submission(
         name=name,
         description=description,
         model_link=model_link,
+        preferred_model=preferred_model,
+        license=license_,
+        prompt_text=prompt_text,
+        prompt_file=prompt_file.file.read() if prompt_file is not None else None,
         predictions=predictions_file.file.read(),
     )
     intake = SubmissionIntake(db=db, storage=storage, submission_queue=submission_queue, clock=clock)
     try:
         submission = intake.submit(challenge, current_user, form)
+    except DailyLimitReached as exc:
+        return _daily_limit_response(exc, clock())
     except SubmissionRejected as exc:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -200,6 +224,16 @@ def create_submission(
         )
     return SubmissionCreatedResponse(
         id=submission.id, status=submission.status.value, message="Submission accepted; scoring has been queued."
+    )
+
+
+def _daily_limit_response(exc: DailyLimitReached, now: datetime.datetime) -> JSONResponse:
+    """429 with the reset time as ISO 8601 UTC, and Retry-After in seconds."""
+    retry_after = max(0, math.ceil((exc.reset_at - now).total_seconds()))
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content=DailyLimitResponse(detail=str(exc), reset_at=f"{exc.reset_at:%Y-%m-%dT%H:%M:%S}Z").model_dump(),
+        headers={"Retry-After": str(retry_after)},
     )
 
 # ******** Monitoring endpoints ********

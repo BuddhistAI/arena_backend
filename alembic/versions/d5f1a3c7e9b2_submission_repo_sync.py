@@ -6,7 +6,7 @@ folder there, set once published; ``sync_status`` is ``pending`` until then,
 attempts.
 
 Revision ID: d5f1a3c7e9b2
-Revises: c4e8a2b6d1f3
+Revises: d5f1b3c7e9a2
 Create Date: 2026-11-26 18:00:00
 
 """
@@ -16,7 +16,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision: str = 'd5f1a3c7e9b2'
-down_revision: Union[str, Sequence[str], None] = 'c4e8a2b6d1f3'
+down_revision: Union[str, Sequence[str], None] = 'd5f1b3c7e9a2'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

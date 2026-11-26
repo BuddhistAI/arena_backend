@@ -19,8 +19,9 @@ class SubmissionStatus(str, Enum):
     FAILED = "failed"
 
 class SubmissionRead(BaseModel):
-    """Public view of a Submission. The Predictions File's storage key is an
-    internal and not part of it: Predictions are never published."""
+    """Public view of a Submission. The storage keys of the Predictions File
+    and the Artifact are internals and not part of it: Predictions are never
+    published, and the Artifact is published through the Challenge Repo."""
 
     id: uuid.UUID = Field(..., description=SUBMISSION_ID_DESCRIPTION)
     user_id: str = Field(..., description="ID of the user (Auth0 user ID)")
@@ -30,6 +31,10 @@ class SubmissionRead(BaseModel):
     description: Optional[str] = Field(None, description="Description of the submission")
     model_id: Optional[uuid.UUID] = Field(None, description="The model, for Model Submissions")
     model_link: Optional[str] = Field(None, description="Optional https link to the model")
+    preferred_model: Optional[str] = Field(
+        None, description="Prompt and Skill: the exact model id the Artifact was run with"
+    )
+    license: Optional[str] = Field(None, description="Prompt and Skill: the Artifact's license")
     status: SubmissionStatus = Field(..., description="pending, processing, completed (scored) or failed")
     status_message: Optional[str] = Field(None, description="The error, once failed")
     headline_metric: Optional[float] = Field(None, description=HEADLINE_METRIC_DESCRIPTION)
@@ -50,6 +55,11 @@ class SubmissionCreatedResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class DailyLimitResponse(BaseModel):
+    """Answer when the daily Submission limit on a Challenge is reached."""
+    detail: str = Field(..., description="Message saying the limit is reached and when it resets")
+    reset_at: str = Field(..., description="When the limit resets: the next 00:00 UTC, ISO 8601 with Z")
 
 class SubmissionStatusResponse(BaseModel):
     """Where a Submission is in scoring, and its result once scored."""
