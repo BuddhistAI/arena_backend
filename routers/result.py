@@ -253,7 +253,11 @@ async def debug_challenge_data(
     challenge = db.query(Challenge).filter(Challenge.id == challenge_id).first()
     
     # Get submissions
-    submissions = db.query(Submission).filter(Submission.challenge_id == challenge_id).all()
+    submissions = (
+        db.query(Submission)
+        .filter(Submission.challenge_id == challenge_id, Submission.deleted_at.is_(None))
+        .all()
+    )
     
     # Get all results
     all_results = db.query(Result).all()
@@ -284,7 +288,7 @@ async def debug_all_data(db: db_dependency):
     from models.challenge import Challenge
     
     challenges = db.query(Challenge).all()
-    submissions = db.query(Submission).all() 
+    submissions = db.query(Submission).filter(Submission.deleted_at.is_(None)).all()
     results = db.query(Result).all()
     
     return {

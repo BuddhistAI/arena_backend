@@ -292,6 +292,30 @@ def test_a_deleted_submissions_results_leave_the_leaderboard_queries(
     assert [r["submission_id"] for r in response.json()] == [kept]
 
 
+def test_a_deleted_submission_leaves_the_challenge_debug_view(client, headers_for, participant, challenge):
+    """The debug view of a Challenge lists only its Submissions that were not deleted."""
+    headers = headers_for(participant)
+    deleted = submitted(client, headers, challenge)
+    kept = submitted(client, headers, challenge)
+
+    delete(client, deleted, headers)
+
+    body = client.get(f"/results/debug/challenge/{challenge['id']}").json()
+    assert [s["id"] for s in body["submissions"]] == [kept]
+    assert [s["submission_id"] for s in body["submission_results"]] == [kept]
+
+
+def test_a_deleted_submission_leaves_the_debug_view_of_all_data(client, headers_for, participant, challenge):
+    """The debug view of all data lists only Submissions that were not deleted."""
+    headers = headers_for(participant)
+    deleted = submitted(client, headers, challenge)
+    kept = submitted(client, headers, challenge)
+
+    delete(client, deleted, headers)
+
+    assert [s["id"] for s in client.get("/results/debug/all-data").json()["submissions"]] == [kept]
+
+
 @pytest.mark.parametrize("method", ["put", "patch"])
 def test_a_submission_cannot_be_edited(client, headers_for, participant, challenge, method):
     """There is no endpoint to change a Submission after it is made."""
