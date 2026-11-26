@@ -6,7 +6,7 @@ import datetime
 
 import pytest
 
-from test_create_challenge import category, create_challenge, jsonl, zip_of  # noqa: F401
+from test_create_challenge import admin_read, category, create_challenge, jsonl, zip_of  # noqa: F401
 
 
 def edit_challenge(client, headers, challenge_id, data=None, files=None):
@@ -24,7 +24,7 @@ def challenge(client, admin_headers, category, db):  # noqa: F811
     assert response.status_code == 201, response.text
     created = response.json()
     set_columns(db, created["id"], sync_status="synced")
-    return read(client, created["id"])
+    return read(client, created)
 
 
 def set_columns(db, challenge_id, **values):
@@ -42,8 +42,7 @@ def lock(db, challenge):
     set_columns(db, challenge["id"], locked_at=datetime.datetime(2026, 11, 1, 12, 0))
 
 
-def read(client, challenge_id):
-    return client.get(f"/challenges/{challenge_id}").json()
+read = admin_read
 
 
 def test_signed_in_non_admin_is_not_allowed_to_edit(client, user_headers, challenge):
@@ -51,7 +50,7 @@ def test_signed_in_non_admin_is_not_allowed_to_edit(client, user_headers, challe
 
     assert response.status_code == 403, response.text
     assert "admin" in response.json()["detail"].lower()
-    assert read(client, challenge["id"])["title"] == challenge["title"]
+    assert read(client, challenge)["title"] == challenge["title"]
 
 
 def test_before_the_lock_admin_replaces_the_ground_truth_and_sync_becomes_pending(
@@ -68,7 +67,7 @@ def test_before_the_lock_admin_replaces_the_ground_truth_and_sync_becomes_pendin
 
     assert response.status_code == 200, response.text
     assert response.json()["sync_status"] == "pending"
-    assert read(client, challenge["id"])["sync_status"] == "pending"
+    assert read(client, challenge)["sync_status"] == "pending"
     [private_key] = [key for key in storage.objects if key.startswith("evalai/private/")]
     assert storage.objects[private_key] == new_ground_truth
 
@@ -78,7 +77,7 @@ def test_the_read_api_shows_whether_a_challenge_is_locked(client, db, challenge)
 
     lock(db, challenge)
 
-    assert read(client, challenge["id"])["locked"] is True
+    assert read(client, challenge)["locked"] is True
     [listed] = client.get("/challenges/list").json()
     assert listed["locked"] is True
 
@@ -107,7 +106,7 @@ DATA_EDITS = [
 @pytest.mark.parametrize("edit", DATA_EDITS)
 def test_after_the_lock_data_and_scorer_edits_are_refused(client, admin_headers, db, challenge, storage, edit):
     lock(db, challenge)
-    before = read(client, challenge["id"])
+    before = read(client, challenge)
     stored_before = dict(storage.objects)
 
     response = edit_challenge(
@@ -120,7 +119,7 @@ def test_after_the_lock_data_and_scorer_edits_are_refused(client, admin_headers,
 
     assert response.status_code == 409, response.text
     assert "Locked" in response.json()["detail"]
-    assert read(client, challenge["id"]) == before  # not even the title changed
+    assert read(client, challenge) == before  # not even the title changed
     assert storage.objects == stored_before
 
 
@@ -135,7 +134,7 @@ def test_after_the_lock_title_description_and_image_stay_editable(client, admin_
     )
 
     assert response.status_code == 200, response.text
-    edited = read(client, challenge["id"])
+    edited = read(client, challenge)
     assert edited["title"] == "Tibetan OCR, revised"
     assert edited["description"] == "Read the manuscript."
     assert edited["image_uri"] == "https://img.test/new.png"
@@ -160,7 +159,7 @@ def test_before_the_lock_a_ground_truth_that_does_not_match_the_stored_inputs_is
     assert response.status_code == 422, response.text
     [error] = response.json()["errors"]
     assert (error["field"], error["id"]) == ("ground_truth_file", "2")
-    assert read(client, challenge["id"]) == challenge
+    assert read(client, challenge) == challenge
     assert storage.objects == stored_before
 
 
@@ -175,7 +174,7 @@ def test_before_the_lock_a_scorer_that_does_not_fit_the_stored_ground_truth_is_r
         ("ground_truth_file", "1"),
         ("ground_truth_file", "2"),
     }
-    assert read(client, challenge["id"]) == challenge
+    assert read(client, challenge) == challenge
 
 
 def test_before_the_lock_an_invalid_parameter_is_rejected(client, admin_headers, challenge):
@@ -184,14 +183,14 @@ def test_before_the_lock_an_invalid_parameter_is_rejected(client, admin_headers,
     assert response.status_code == 422, response.text
     [error] = response.json()["errors"]
     assert error["field"] == "scorer_params"
-    assert read(client, challenge["id"]) == challenge
+    assert read(client, challenge) == challenge
 
 
 def test_before_the_lock_admin_changes_the_parameters(client, admin_headers, challenge):
     response = edit_challenge(client, admin_headers, challenge["id"], data={"scorer_params": '{"language": "en"}'})
 
     assert response.status_code == 200, response.text
-    edited = read(client, challenge["id"])
+    edited = read(client, challenge)
     assert edited["scorer_params"] == {"language": "en"}
     assert edited["scorer_name"] == "cer"
     assert edited["sync_status"] == "pending"
@@ -219,7 +218,7 @@ def test_before_the_lock_admin_switches_scorer_with_new_data_and_gets_its_defaul
     )
 
     assert response.status_code == 200, response.text
-    edited = read(client, challenge["id"])
+    edited = read(client, challenge)
     assert edited["scorer_name"] == "span_f1"
     assert edited["scorer_label"] == "Span IoU F1"
     assert edited["direction"] == "higher_is_better"
@@ -251,7 +250,7 @@ def test_before_the_lock_admin_adds_a_media_archive_with_inputs_that_point_into_
     )
 
     assert response.status_code == 200, response.text
-    key = read(client, challenge["id"])["media_archive_key"]
+    key = read(client, challenge)["media_archive_key"]
     assert key.startswith("evalai/public/")
     assert storage.objects[key] == archive
 
@@ -297,7 +296,7 @@ def test_a_title_used_by_another_challenge_is_rejected(client, admin_headers, ca
     response = edit_challenge(client, admin_headers, challenge["id"], data={"title": "Tibetan ASR"})
 
     assert response.status_code == 409, response.text
-    assert read(client, challenge["id"])["title"] == challenge["title"]
+    assert read(client, challenge)["title"] == challenge["title"]
 
 
 def test_an_unknown_category_is_rejected(client, admin_headers, challenge):
@@ -308,7 +307,7 @@ def test_an_unknown_category_is_rejected(client, admin_headers, challenge):
     assert response.status_code == 422, response.text
     [error] = response.json()["errors"]
     assert error["field"] == "category_id"
-    assert read(client, challenge["id"]) == challenge
+    assert read(client, challenge) == challenge
 
 
 def test_editing_an_unknown_challenge_is_not_found(client, admin_headers):

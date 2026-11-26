@@ -2,7 +2,7 @@
 has its repo archived by the Sync Worker; an admin asks for a Resync, which
 rebuilds the repo from the arena's data. Tests drain the worker synchronously."""
 
-from test_create_challenge import category, create_challenge  # noqa: F401  (category is a fixture)
+from test_create_challenge import admin_read, category, create_challenge  # noqa: F401  (category is a fixture)
 
 
 def created(response):
@@ -91,8 +91,7 @@ def resync(client, challenge, headers):
     return client.post(f"/challenges/resync/{challenge['id']}", headers=headers)
 
 
-def read(client, challenge):
-    return client.get(f"/challenges/{challenge['id']}").json()
+read = admin_read
 
 
 def test_a_failed_sync_is_published_after_a_resync(

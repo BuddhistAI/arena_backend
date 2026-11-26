@@ -6,8 +6,9 @@ from schemas.category import CategoryRead
 
 
 class ChallengeRead(BaseModel):
-    """Public view of a Challenge. The Ground Truth storage key is private and
-    deliberately not part of it."""
+    """Public view of a Challenge. Storage keys and the last sync error are
+    internals and not part of it: participants get the public links from the
+    repo's ``challenge.json``. Admins see them in ``ChallengeAdminRead``."""
 
     id: uuid.UUID
     title: str
@@ -23,13 +24,9 @@ class ChallengeRead(BaseModel):
     scorer_label: str
     package_version: str
 
-    inputs_key: str
-    media_archive_key: Optional[str] = None
-
     repo_name: str
     sync_status: str
     sync_attempts: int
-    last_sync_error: Optional[str] = None
     locked_at: Optional[datetime.datetime] = None
 
     @computed_field
@@ -57,5 +54,8 @@ class ChallengeAdminRead(ChallengeWithCategoryRead):
     """Admin view of a Challenge, deleted ones included: the public view plus
     the storage keys, the last sync error and the deletion time."""
 
+    inputs_key: str
+    media_archive_key: Optional[str] = None
     ground_truth_key: str
+    last_sync_error: Optional[str] = None
     deleted_at: Optional[datetime.datetime] = None

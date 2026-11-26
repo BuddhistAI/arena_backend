@@ -8,6 +8,7 @@ import json
 import pytest
 
 from test_create_challenge import (  # noqa: F401  (category is a fixture)
+    admin_read,
     OCR_GROUND_TRUTH,
     OCR_INPUTS,
     category,
@@ -22,8 +23,7 @@ def created(response):
     return response.json()
 
 
-def read(client, challenge):
-    return client.get(f"/challenges/{challenge['id']}").json()
+read = admin_read
 
 
 def test_a_created_challenge_is_published_to_its_repo_with_challenge_json(

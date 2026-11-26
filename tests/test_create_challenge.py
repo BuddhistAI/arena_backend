@@ -58,6 +58,15 @@ def create_challenge(
     return client.post("/challenges/create", data=data, files=files, headers=headers)
 
 
+def admin_read(client, challenge):
+    """The admin view of a Challenge (storage keys, last sync error...), read
+    by the admin who created it."""
+    headers = {"Authorization": f"Bearer {challenge['created_by']}"}
+    response = client.get(f"/challenges/admin/{challenge['id']}", headers=headers)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def test_signed_in_non_admin_is_not_allowed_to_create(client, user_headers, category, storage):
     response = create_challenge(client, user_headers, category)
 
@@ -95,7 +104,6 @@ def test_admin_creates_a_challenge_whose_files_are_stored_and_sync_is_pending(
     assert created["sync_attempts"] == 0
     assert created["locked_at"] is None
     assert created["media_archive_key"] is None
-    assert "ground_truth_key" not in created
 
     # Inputs are public; the Ground Truth is stored privately, byte for byte.
     assert created["inputs_key"].startswith("evalai/public/")
@@ -108,8 +116,10 @@ def test_admin_creates_a_challenge_whose_files_are_stored_and_sync_is_pending(
     # Creating never talks to GitHub; the Sync Worker publishes later.
     assert repo_host.repos == {}
 
-    read_back = client.get(f"/challenges/{created['id']}").json()
-    assert read_back == created
+    assert created["ground_truth_key"] == private_key
+    assert admin_read(client, created) == created
+    public = client.get(f"/challenges/{created['id']}").json()
+    assert "inputs_key" not in public and "ground_truth_key" not in public
 
 
 # One valid Challenge per registered Scorer: (Scorer, parameters sent,

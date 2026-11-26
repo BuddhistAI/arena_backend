@@ -141,7 +141,7 @@ def _invalid(errors: List[ChallengeDataError]) -> JSONResponse:
 
 @router.post(
     "/create",
-    response_model=ChallengeRead,
+    response_model=ChallengeAdminRead,
     status_code=status.HTTP_201_CREATED,
     summary="Create a new challenge",
     responses={
@@ -270,7 +270,7 @@ DATA_FIELDS = ("scorer_name", "scorer_params", "inputs_file", "ground_truth_file
 
 @router.patch(
     "/update/{challenge_id}",
-    response_model=ChallengeRead,
+    response_model=ChallengeAdminRead,
     status_code=status.HTTP_200_OK,
     summary="Edit a challenge",
     responses={
@@ -439,7 +439,7 @@ def _put(storage: ObjectStorage, key: str, body, content_type: str) -> None:
 
 @router.post(
     "/resync/{challenge_id}",
-    response_model=ChallengeRead,
+    response_model=ChallengeAdminRead,
     status_code=status.HTTP_200_OK,
     summary="Resync a challenge's repo",
     responses={403: {"description": "The signed-in user is not an admin."}},
