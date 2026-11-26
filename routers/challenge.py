@@ -18,7 +18,7 @@ import logging
 import re
 import unicodedata
 import uuid
-from models.challenge import utc_now
+from ports.clock import Clock, get_clock
 from ports.object_storage import ObjectStorage, get_object_storage, private_key, public_key
 from service import scorer_catalogue
 from service.challenge_data import (
@@ -537,6 +537,7 @@ def resync_challenge(
 def delete_challenge(
     db: db_dependency,
     current_user: User = Depends(require_admin),
+    clock: Clock = Depends(get_clock),
     challenge_id: UUID = Path(..., description="This is the ID of the challenge to delete"),
 ):
     """
@@ -545,7 +546,7 @@ def delete_challenge(
     is kept as a tombstone, so the repo name is never reused.
     """
     challenge = _live_challenge_or_404(db, challenge_id)
-    deleted_at = utc_now()
+    deleted_at = clock()
     challenge.deleted_at = deleted_at
     challenge.queue_sync()
     db.commit()

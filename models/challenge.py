@@ -22,11 +22,6 @@ class Direction(str, enum.Enum):
     HIGHER_IS_BETTER = "higher_is_better"
 
 
-def utc_now() -> datetime.datetime:
-    """Now in naive UTC, like the Challenge timestamp columns."""
-    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-
-
 def _one_of(column: str, values: type) -> str:
     """SQL check that ``column`` holds one of the enum's values."""
     return f"{column} IN ({', '.join(repr(member.value) for member in values)})"

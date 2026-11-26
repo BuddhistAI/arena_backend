@@ -29,7 +29,8 @@ from typing import Callable, List, Optional
 
 from sqlalchemy.orm import Session
 
-from models.challenge import Challenge, SyncStatus, utc_now
+from models.challenge import Challenge, SyncStatus
+from ports.clock import Clock, utc_now
 from ports.object_storage import ObjectStorage
 from ports.repo_host import RepoAlreadyExists, RepoHost, RepoNotFound
 from service.challenge_publisher import MAX_COMMITTED_INPUTS_BYTES, challenge_files
@@ -51,7 +52,7 @@ class SyncWorker:
         repo_host: RepoHost,
         max_committed_inputs_bytes: int = MAX_COMMITTED_INPUTS_BYTES,
         backoff: timedelta = DEFAULT_BACKOFF,
-        clock: Callable[[], datetime] = utc_now,
+        clock: Clock = utc_now,
     ) -> None:
         self.session_factory = session_factory
         self.storage = storage
