@@ -22,9 +22,12 @@ from models.challenge import utc_now
 from ports.object_storage import ObjectStorage, get_object_storage, private_key, public_key
 from service import scorer_catalogue
 from service.challenge_data import (
+    DATA_FIELDS,
     GROUND_TRUTH_FIELD,
     INPUTS_FIELD,
     MEDIA_ARCHIVE_FIELD,
+    SCORER_NAME_FIELD,
+    SCORER_PARAMS_FIELD,
     ChallengeDataError,
     InvalidChallengeData,
     media_archive_size_limit,
@@ -171,8 +174,7 @@ def create_new_challenge(
     """
     title = title.strip()
     errors: List[ChallengeDataError] = []
-    if db.get(models.Category, category_id) is None:
-        errors.append(ChallengeDataError("category_id", f"no category with id {category_id}"))
+    _existing_category_id(db, category_id, errors)
 
     media_archive = media_archive_file.file if media_archive_file is not None else None
     try:
@@ -191,8 +193,7 @@ def create_new_challenge(
 
     challenge_id = uuid.uuid4()
     repo_name = repo_name_for(title, challenge_id)
-    if db.query(Challenge).filter(Challenge.title == title).first():
-        raise HTTPException(status_code=409, detail=f"A Challenge titled {title!r} already exists.")
+    _refuse_taken_title(db, title)
     clash = db.query(Challenge).filter(Challenge.repo_name == repo_name).first()
     if clash:
         raise HTTPException(
@@ -276,11 +277,24 @@ def _commit_or_discard(db: Session, storage: ObjectStorage, new_keys: Iterable[s
     except IntegrityError:
         db.rollback()
         _delete_quietly(storage, new_keys)
-        raise HTTPException(status_code=409, detail=f"A Challenge titled {title!r} already exists.")
+        raise _title_taken(title)
     except Exception:
         db.rollback()
         _delete_quietly(storage, new_keys)
         raise
+
+
+def _title_taken(title: Optional[str]) -> HTTPException:
+    return HTTPException(status_code=409, detail=f"A Challenge titled {title!r} already exists.")
+
+
+def _refuse_taken_title(db: Session, title: str, challenge_id: Optional[UUID] = None) -> None:
+    """409 if another Challenge, deleted ones included, has the title."""
+    others = db.query(Challenge).filter(Challenge.title == title)
+    if challenge_id is not None:
+        others = others.filter(Challenge.id != challenge_id)
+    if others.first():
+        raise _title_taken(title)
 
 
 def _delete_quietly(storage: ObjectStorage, keys: Iterable[str]) -> None:
@@ -291,9 +305,6 @@ def _delete_quietly(storage: ObjectStorage, keys: Iterable[str]) -> None:
             logging.exception("Could not delete the unused object %s", key)
 
 # for editing a challenge
-
-# Form fields whose change re-validates the data and is refused after the Lock.
-DATA_FIELDS = ("scorer_name", "scorer_params", "inputs_file", "ground_truth_file", "media_archive_file")
 
 
 @router.patch(
@@ -332,12 +343,13 @@ def update_challenge(
     validated with the same rules as create, against the stored data for
     whatever is not replaced, and are refused with 409 once the Challenge is
     Locked. A Scorer or parameters equal to the stored ones are not a change;
-    an uploaded file always is. Title, description and image stay editable. Any accepted change
-    sets sync status to ``pending`` so the Sync Worker re-publishes the repo.
+    an uploaded file always is. Title, description and image stay editable.
+    Any accepted change sets sync status to ``pending`` so the Sync Worker
+    re-publishes the repo.
     """
     challenge = _live_challenge_or_404(db, challenge_id)
 
-    sent = {
+    requested_changes = {
         name: value
         for name, value in {
             "title": (title or "").strip() or None,
@@ -345,19 +357,19 @@ def update_challenge(
             "image_uri": image_uri or None,
             "description": description or None,
             "status": challenge_status or None,
-            "scorer_name": scorer_name or None,
-            "scorer_params": scorer_params or None,
-            "inputs_file": inputs_file,
-            "ground_truth_file": ground_truth_file,
-            "media_archive_file": media_archive_file,
+            SCORER_NAME_FIELD: scorer_name or None,
+            SCORER_PARAMS_FIELD: scorer_params or None,
+            INPUTS_FIELD: inputs_file,
+            GROUND_TRUTH_FIELD: ground_truth_file,
+            MEDIA_ARCHIVE_FIELD: media_archive_file,
         }.items()
         if value is not None
     }
-    _drop_unchanged_scorer(challenge, sent)
-    if not sent:
+    _drop_unchanged_scorer(challenge, requested_changes)
+    if not requested_changes:
         return challenge
 
-    data_edits = [name for name in DATA_FIELDS if name in sent]
+    data_edits = [name for name in DATA_FIELDS if name in requested_changes]
     if data_edits and challenge.locked_at is not None:
         raise HTTPException(
             status_code=409,
@@ -368,53 +380,57 @@ def update_challenge(
         )
 
     errors: List[ChallengeDataError] = []
-    if "category_id" in sent:
-        sent["category_id"] = _existing_category_id(db, sent["category_id"], errors)
+    if "category_id" in requested_changes:
+        requested_changes["category_id"] = _existing_category_id(db, requested_changes["category_id"], errors)
     validated = None
     if data_edits:
         try:
-            validated = _validate_edit(challenge, sent, storage, max_media_archive_bytes)
+            validated = _validate_edit(challenge, requested_changes, storage, max_media_archive_bytes)
         except InvalidChallengeData as exc:
             errors.extend(exc.errors)
     if errors:
         return _invalid(errors)
 
-    if "title" in sent and db.query(Challenge).filter(
-        Challenge.title == sent["title"], Challenge.id != challenge.id
-    ).first():
-        raise HTTPException(status_code=409, detail=f"A Challenge titled {sent['title']!r} already exists.")
+    if "title" in requested_changes:
+        _refuse_taken_title(db, requested_changes["title"], challenge.id)
 
     # Replacements go under new keys and the row points at them only once
     # committed, so a failed edit never leaves new files with an old Scorer.
     # The replaced objects are deleted after the commit.
     keys = _store_uploads(storage, challenge.id, {
-        stored.field: sent[stored.field].file for stored in STORED_FILES if stored.field in sent
+        stored.field: requested_changes[stored.field].file
+        for stored in STORED_FILES
+        if stored.field in requested_changes
     })
     replaced = [getattr(challenge, column) for column in keys if getattr(challenge, column)]
     for column, key in keys.items():
         setattr(challenge, column, key)
 
     for name in ("title", "category_id", "image_uri", "description", "status"):
-        if name in sent:
-            setattr(challenge, name, sent[name])
+        if name in requested_changes:
+            setattr(challenge, name, requested_changes[name])
     if validated is not None:
         challenge.apply_scorer(validated)
     # New content, so a fresh round of sync attempts.
     challenge.queue_sync()
-    _commit_or_discard(db, storage, keys.values(), sent.get("title"))
+    _commit_or_discard(db, storage, keys.values(), requested_changes.get("title"))
     _delete_quietly(storage, replaced)
     db.refresh(challenge)
     return challenge
 
 
-def _drop_unchanged_scorer(challenge: Challenge, sent: dict) -> None:
+def _drop_unchanged_scorer(challenge: Challenge, requested_changes: dict) -> None:
     """A Scorer or parameters equal to the stored ones are not a change: a form
     may resend them with a new title, even after the Lock. Parameters are
     compared with their defaults filled in. Uploaded files always count."""
-    if sent.get("scorer_name") == challenge.scorer_name:
-        del sent["scorer_name"]
-    if "scorer_name" not in sent and "scorer_params" in sent and _same_params(challenge, sent["scorer_params"]):
-        del sent["scorer_params"]
+    if requested_changes.get(SCORER_NAME_FIELD) == challenge.scorer_name:
+        del requested_changes[SCORER_NAME_FIELD]
+    if (
+        SCORER_NAME_FIELD not in requested_changes
+        and SCORER_PARAMS_FIELD in requested_changes
+        and _same_params(challenge, requested_changes[SCORER_PARAMS_FIELD])
+    ):
+        del requested_changes[SCORER_PARAMS_FIELD]
 
 
 def _same_params(challenge: Challenge, raw: str) -> bool:
@@ -427,9 +443,11 @@ def _same_params(challenge: Challenge, raw: str) -> bool:
         return False
 
 
-def _existing_category_id(db: Session, value: str, errors: List[ChallengeDataError]) -> Optional[UUID]:
+def _existing_category_id(db: Session, value, errors: List[ChallengeDataError]) -> Optional[UUID]:
+    """The category id (a UUID or its text), or None after recording in
+    ``errors`` why it names no category."""
     try:
-        category_id = UUID(value)
+        category_id = value if isinstance(value, UUID) else UUID(value)
     except ValueError:
         errors.append(ChallengeDataError("category_id", f"{value!r} is not a UUID"))
         return None
@@ -438,24 +456,26 @@ def _existing_category_id(db: Session, value: str, errors: List[ChallengeDataErr
     return category_id
 
 
-def _validate_edit(challenge: Challenge, sent: dict, storage: ObjectStorage, max_media_archive_bytes: int):
+def _validate_edit(
+    challenge: Challenge, requested_changes: dict, storage: ObjectStorage, max_media_archive_bytes: int
+):
     """Validate the Challenge as it would be after the edit: the sent files and
     Scorer settings, and the stored ones for whatever was not sent."""
-    new_scorer_name = sent.get("scorer_name", challenge.scorer_name)
-    if "scorer_params" in sent:
-        params = sent["scorer_params"]
+    new_scorer_name = requested_changes.get(SCORER_NAME_FIELD, challenge.scorer_name)
+    if SCORER_PARAMS_FIELD in requested_changes:
+        params = requested_changes[SCORER_PARAMS_FIELD]
     elif new_scorer_name == challenge.scorer_name:
         params = challenge.scorer_params
     else:
         params = None  # another Scorer: its defaults, not the old Scorer's parameters
 
     def file_or_stored(field: str, key: str) -> bytes:
-        if field in sent:
-            return sent[field].file.read()
+        if field in requested_changes:
+            return requested_changes[field].file.read()
         return storage.get(key)
 
-    if "media_archive_file" in sent:
-        media_archive = sent["media_archive_file"].file
+    if MEDIA_ARCHIVE_FIELD in requested_changes:
+        media_archive = requested_changes[MEDIA_ARCHIVE_FIELD].file
     elif challenge.media_archive_key:
         # The port has no streaming read, so the stored archive is held in memory.
         media_archive = io.BytesIO(storage.get(challenge.media_archive_key))
@@ -463,8 +483,8 @@ def _validate_edit(challenge: Challenge, sent: dict, storage: ObjectStorage, max
         media_archive = None
 
     return validate_challenge_data(
-        inputs=file_or_stored("inputs_file", challenge.inputs_key),
-        ground_truth=file_or_stored("ground_truth_file", challenge.ground_truth_key),
+        inputs=file_or_stored(INPUTS_FIELD, challenge.inputs_key),
+        ground_truth=file_or_stored(GROUND_TRUTH_FIELD, challenge.ground_truth_key),
         scorer_name=new_scorer_name,
         scorer_params=params,
         media_archive=media_archive,
