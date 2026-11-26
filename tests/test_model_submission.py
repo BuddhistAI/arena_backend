@@ -58,7 +58,7 @@ def test_a_model_submission_is_scored_by_the_challenges_scorer(
     client, admin_headers, headers_for, participant, category, submission_worker
 ):
     """Once drained, the Submission is ``completed`` with the locked Scorer's
-    unrounded Headline Metric and details, and its type, name and link."""
+    unrounded Headline Metric and details."""
     created = create_challenge(
         client, admin_headers, category,
         scorer_name="wer", scorer_params='{"language": "en"}',
@@ -68,20 +68,28 @@ def test_a_model_submission_is_scored_by_the_challenges_scorer(
     # Item a is exact (WER 0); item b gets one of its two words wrong (WER 1/2).
     predictions = jsonl({"id": "a", "prediction": "the cat sat"}, {"id": "b", "prediction": "a cat"})
 
-    response = submit(
-        client, headers_for(participant), created,
-        predictions=predictions, name="Whisper large-v3", model_link="https://huggingface.co/openai/whisper-large-v3",
-    )
+    response = submit(client, headers_for(participant), created, predictions=predictions)
     submission_worker.drain()
 
     submission = read(client, response.json()["id"])
     assert submission["status"] == "completed"
     assert submission["headline_metric"] == 0.25
     assert submission["score_details"]["items"]["b"]["rate"] == 0.5
+    assert submission["status_message"] is None
+
+
+def test_a_model_submission_reads_back_its_type_name_and_link(client, headers_for, participant, challenge):
+    """A stored Model Submission reads back with type ``model`` and the name
+    and model link it was sent with."""
+    response = submit(
+        client, headers_for(participant), challenge,
+        name="Whisper large-v3", model_link="https://huggingface.co/openai/whisper-large-v3",
+    )
+
+    submission = read(client, response.json()["id"])
     assert submission["type"] == "model"
     assert submission["name"] == "Whisper large-v3"
     assert submission["model_link"] == "https://huggingface.co/openai/whisper-large-v3"
-    assert submission["status_message"] is None
 
 
 @pytest.fixture
