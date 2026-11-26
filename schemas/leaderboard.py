@@ -43,10 +43,21 @@ class LeaderboardScorerRead(BaseModel):
         from_attributes = True
 
 
+class LeaderboardCounts(BaseModel):
+    """How many rows the whole Leaderboard holds, whatever the type filter,
+    search and page."""
+
+    all: int
+    model: int
+    prompt: int
+    skill: int
+
+
 class LeaderboardRead(BaseModel):
     """One page of a Challenge's Leaderboard."""
 
     scorer: LeaderboardScorerRead
+    counts: LeaderboardCounts
     page: int = Field(..., description="This page's number, from 1")
     limit: int = Field(..., description="Rows per page, after the cap")
     rows: List[LeaderboardRowRead]
