@@ -1,46 +1,29 @@
 from sqlalchemy.orm import Session
-from uuid import UUID
 import models
-from database import get_db
-from typing import Optional, Annotated
-from fastapi import Depends
 
-db_dependency = Annotated[Session, Depends(get_db)]
 
-def create_or_get_model(db: db_dependency, model_name: str, user_id: UUID) -> models.Model:
+def create_or_get_model(db: Session, model_name: str, user_id: str) -> models.Model:
     """
-    Create a new model or get an existing model by name.
-    
-    This function checks if a model with the given name already exists.
-    If it exists, returns the existing model.
-    If it doesn't exist, creates a new model record.
-    
+    Get the model with this name, or add a new one to the session.
+
+    A new model is flushed, not committed: the caller commits it together
+    with whatever refers to it, so a failed Submission leaves no model behind.
+
     Args:
         db: Database session
         model_name: Name of the model
         user_id: ID of the user creating the model
-        
+
     Returns:
-        Model: The existing or newly created model instance
+        Model: The existing or newly added model instance
     """
-    # Check if model with this name already exists
     existing_model = db.query(models.Model).filter(
         models.Model.name == model_name
     ).first()
-    
     if existing_model:
-        # Return existing model
         return existing_model
-    
-    # Create new model if it doesn't exist
-    new_model = models.Model(
-        name=model_name,
-        created_by=str(user_id),  # Convert UUID to string
-        updated_by=str(user_id)   # Convert UUID to string
-    )
-    
+
+    new_model = models.Model(name=model_name, created_by=user_id, updated_by=user_id)
     db.add(new_model)
-    db.commit()
-    db.refresh(new_model)
-    
+    db.flush()
     return new_model

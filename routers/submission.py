@@ -1,20 +1,16 @@
-from fastapi import APIRouter, status, HTTPException, Depends, Path, Body, UploadFile, File, Form
-from typing import Annotated, List
+from fastapi import APIRouter, status, HTTPException, Depends, Path, UploadFile, File, Form
+from fastapi.responses import JSONResponse
+from typing import Annotated, List, Optional
 from sqlalchemy.orm import Session
 import models
 from models.user import User
-from models.submission import SubmissionStatus
 from database import get_db
-from schemas.submission import SubmissionCreate, SubmissionRead, SubmissionCreatedResponse, SubmissionStatusResponse
-from CRUD.model import create_or_get_model
-from submission_worker import get_queue_stats
-from submission_cache import (
-    get_submission_progress, 
-    set_submission_progress, 
-    get_cache_stats,
-    CacheStatus
-)
-import logging
+from schemas.submission import SubmissionRead, SubmissionCreatedResponse, SubmissionStatusResponse
+from ports.clock import Clock, get_clock
+from ports.object_storage import ObjectStorage, get_object_storage
+from service.submission_intake import SubmissionForm, SubmissionIntake, SubmissionRejected
+from submission_worker import SubmissionQueue, get_queue_stats, get_submission_queue
+from submission_cache import get_cache_stats
 from auth import get_current_active_user
 import uuid
 
@@ -59,69 +55,18 @@ async def get_submission_status(
     submission_id: uuid.UUID = Path(..., description=SUBMISSION_ID_PATH_DESCRIPTION)
 ):
     """
-    Get the current processing status of a submission.
-    
-    Use this endpoint to track the progress of your submission after creation.
-    This endpoint checks the fast in-memory cache first for instant responses,
-    then falls back to the database if needed.
-    
+    Get where a Submission is in scoring, to poll after creating it.
+
     Status values:
-    - pending: Submission created, waiting to start processing
-    - processing: File upload and evaluation in progress  
-    - completed: All processing completed successfully
-    - failed: Processing failed, check status_message for details
+    - pending: stored, waiting for a worker
+    - processing: being scored
+    - completed: scored; ``headline_metric`` and ``score_details`` are set
+    - failed: ``status_message`` says why
     """
-    submission_id_str = str(submission_id)
-    
-    # First, try to get status from fast cache
-    cached_progress = get_submission_progress(submission_id_str)
-    if cached_progress:
-        # Cache hit - return instantly without database query
-        logging.info(f"Fast cache hit for submission {submission_id_str}")
-        
-        # Map cache status to schema status
-        cache_to_schema_status = {
-            CacheStatus.PENDING: SubmissionStatus.PENDING,
-            CacheStatus.PROCESSING: SubmissionStatus.PROCESSING,
-            CacheStatus.UPLOADING: SubmissionStatus.PROCESSING,  # Map uploading to processing
-            CacheStatus.VALIDATING: SubmissionStatus.PROCESSING,  # Map validating to processing
-            CacheStatus.EVALUATING: SubmissionStatus.PROCESSING,  # Map evaluating to processing
-            CacheStatus.COMPLETED: SubmissionStatus.COMPLETED,
-            CacheStatus.FAILED: SubmissionStatus.FAILED
-        }
-        
-        schema_status = cache_to_schema_status.get(cached_progress.status, SubmissionStatus.PROCESSING)
-        
-        return SubmissionStatusResponse(
-            id=submission_id,
-            status=schema_status,
-            status_message=cached_progress.message,
-            progress_percentage=cached_progress.progress_percentage,
-            current_step=cached_progress.step,
-            error_details=cached_progress.error_details,
-            created_at=None,  # We don't store timestamps in cache for speed
-            updated_at=None
-        )
-    
-    # Cache miss - fall back to database
-    logging.info(f"Cache miss for submission {submission_id_str}, querying database")
     submission = db.query(models.Submission).filter(models.Submission.id == submission_id).first()
     if not submission:
         raise HTTPException(status_code=404, detail=SUBMISSION_NOT_FOUND_MESSAGE)
-    
-    # For queue-based system, we rely on cache and database sync
-    # No need to check individual task status since workers manage their own state
-    
-    return SubmissionStatusResponse(
-        id=submission.id,
-        status=submission.status,
-        status_message=submission.status_message,
-        progress_percentage=None,  # Database doesn't store progress percentage
-        current_step=None,  # Database doesn't store current step
-        error_details=None,  # Database doesn't store detailed errors
-        created_at=submission.created_at,
-        updated_at=submission.updated_at
-    )
+    return submission
 
 
 
@@ -167,25 +112,61 @@ async def delete_submission(
 # ******** basic endpoints ********
 
 
-# ******** upload json file ********
-@router.post("/create-submission", response_model=SubmissionCreatedResponse, status_code=status.HTTP_202_ACCEPTED)
-async def create_submission(
+# ******** create a submission ********
+@router.post(
+    "/create-submission",
+    response_model=SubmissionCreatedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Submit to a challenge",
+    responses={
+        404: {"description": "No live Challenge has that id."},
+        422: {"description": "Invalid Submission: ``errors`` lists each problem; nothing was stored."},
+    },
+)
+def create_submission(
     db: db_dependency,
     current_user: User = Depends(get_current_active_user),
-    file: UploadFile = File(..., description="JSON file containing inference results with 'filename' and 'prediction' columns"),
-    model_name: str = Form(..., description="Name of the model used for inference (you can add new model name and it will create in our model table only if the submission file passes the validation.)"),
-    challenge_id: uuid.UUID = Form(..., description="ID of the challenge for evaluation (basically holds the ground truth file)"),
-    description: str = Form(..., description="Description of the submission (will come from front end)")
+    storage: ObjectStorage = Depends(get_object_storage),
+    submission_queue: SubmissionQueue = Depends(get_submission_queue),
+    clock: Clock = Depends(get_clock),
+    challenge_id: uuid.UUID = Form(..., description="ID of the Challenge submitted to"),
+    submission_type: str = Form(..., alias="type", description="Submission Type: model (prompt and skill coming)"),
+    name: str = Form("", description="Name of the Submission; for a Model, the model name (reused or created)"),
+    description: str = Form("", description="Description of the Submission"),
+    model_link: Optional[str] = Form(None, description="Model only: optional https link to the model"),
+    predictions_file: UploadFile = File(..., description="Predictions File: JSONL {id, prediction} rows, one per Input id"),
 ):
     """
-    Legacy EvalAI-style submission scored with CER/WER against a ground-truth
-    URL. Challenges no longer have that URL: their Ground Truth is a private
-    storage key scored through a Scorer. Submitting returns 501 until RFC 2
-    (Challenge Submissions) rebuilds this endpoint.
+    Submit to a Challenge (signed-in users). Every check runs before anything
+    is stored; on any problem the answer is 422 with every error. A valid
+    Submission is stored ``pending``, Locks the Challenge if it is the first,
+    and is scored in the background with the Challenge's Scorer: poll
+    ``GET /submissions/{id}/status``.
     """
-    raise HTTPException(
-        status_code=501,
-        detail="Submitting to a Challenge is not supported until RFC 2 (Challenge Submissions).",
+    challenge = (
+        db.query(models.Challenge)
+        .filter(models.Challenge.id == challenge_id, models.Challenge.deleted_at.is_(None))
+        .one_or_none()
+    )
+    if challenge is None:
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    form = SubmissionForm(
+        type=submission_type,
+        name=name,
+        description=description,
+        model_link=model_link,
+        predictions=predictions_file.file.read(),
+    )
+    intake = SubmissionIntake(db=db, storage=storage, submission_queue=submission_queue, clock=clock)
+    try:
+        submission = intake.submit(challenge, current_user, form)
+    except SubmissionRejected as exc:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"detail": "The Submission is invalid.", "errors": [e.to_dict() for e in exc.errors]},
+        )
+    return SubmissionCreatedResponse(
+        id=submission.id, status=submission.status.value, message="Submission accepted; scoring has been queued."
     )
 
 # ******** Monitoring endpoints ********

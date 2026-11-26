@@ -252,11 +252,22 @@ def _validate_params(scorer, raw, errors: List[ChallengeDataError]) -> Optional[
 _LINE_MESSAGE = re.compile(r"\bline (\d+):")
 
 
+def line_of(exc: scorer_catalogue.ScorerError) -> Optional[int]:
+    """The line number a JSONL loader error names, if it names one.
+
+    Args:
+        exc: An error raised by one of the catalogue's JSONL loaders.
+
+    Returns:
+        The 1-based line number, or None for whole-file problems.
+    """
+    match = _LINE_MESSAGE.search(str(exc))
+    return int(match.group(1)) if match else None
+
+
 def _load(loader, data: bytes, form_field: str, errors: List[ChallengeDataError]):
     try:
         return loader(data)
     except scorer_catalogue.ScorerError as exc:
-        match = _LINE_MESSAGE.search(str(exc))
-        line = int(match.group(1)) if match else None
-        errors.append(ChallengeDataError(form_field, str(exc), line=line))
+        errors.append(ChallengeDataError(form_field, str(exc), line=line_of(exc)))
         return None

@@ -73,7 +73,6 @@ async def get_results_by_challenge(
             'model_id': submission.model_id,
             'challenge_id': submission.challenge_id,  # Include challenge_id
             'description': submission.description,
-            'dataset_url': submission.dataset_url,
             'created_at': submission.created_at,
             'updated_at': submission.updated_at,
             'model': model_data
@@ -125,7 +124,6 @@ async def list_all_results(db: db_dependency):
                 'model_id': submission.model_id,
                 'challenge_id': submission.challenge_id,  # Include challenge_id
                 'description': submission.description,
-                'dataset_url': submission.dataset_url,
                 'created_at': submission.created_at,
                 'updated_at': submission.updated_at,
                 'model': model_data

@@ -115,7 +115,8 @@ def test_upgrade_leaves_arena_challenges_users_models_and_categories(legacy_data
     assert _count("category") == 1
 
 
-def test_upgraded_challenge_table_matches_the_model(legacy_database, alembic_cfg):
+@pytest.mark.parametrize("table", ["challenge", "submission"])
+def test_upgraded_table_matches_the_model(legacy_database, alembic_cfg, table):
     from alembic import command
     from alembic.autogenerate import compare_metadata
     from alembic.migration import MigrationContext
@@ -126,13 +127,28 @@ def test_upgraded_challenge_table_matches_the_model(legacy_database, alembic_cfg
 
     with database.engine.connect() as conn:
         diffs = compare_metadata(MigrationContext.configure(conn), database.Base.metadata)
-    challenge_diffs = [
+    table_diffs = [
         d
         for d in diffs
-        if "table=<challenge>" in repr(d) or "'challenge'" in repr(d)
+        if f"table=<{table}>" in repr(d) or f"'{table}'" in repr(d)
         # Every model declares its primary key ``unique=True`` too; create_all
         # folds that into the primary key, autogenerate reports it on every
         # table. Not a migration difference.
-        if repr(d) != "('add_constraint', UniqueConstraint(Column('id', NullType(), table=<challenge>)))"
+        if repr(d) != f"('add_constraint', UniqueConstraint(Column('id', NullType(), table=<{table}>)))"
     ]
-    assert challenge_diffs == []
+    assert table_diffs == []
+
+
+def test_downgrade_from_head_restores_the_previous_submission_table(legacy_database, alembic_cfg):
+    """The Submission fields migration can be undone back to ``b7d2e4f1c8a6``."""
+    from alembic import command
+    from sqlalchemy import inspect
+
+    import database
+
+    command.upgrade(alembic_cfg, "head")
+    command.downgrade(alembic_cfg, "b7d2e4f1c8a6")
+
+    columns = {c["name"] for c in inspect(database.engine).get_columns("submission")}
+    assert "dataset_url" in columns
+    assert not columns & {"type", "name", "model_link", "predictions_url", "headline_metric", "score_details"}
